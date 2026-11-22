@@ -80,6 +80,7 @@ class MParams:
         self.wage_posting = True    # False = placeholder wage rule (v3 results)
         self.eta_L = 6.0            # workers' elasticity of job choice to the relative wage (logit)
         self.ojs = 0.10             # share of employed workers searching on the job each quarter
+        self.cap_aware = True       # firms price for the output the labor they expect to get can make
         self.review_q = 4           # quarters between a firm's wage reviews (staggered across firms): annual
         self.anchor = 0.0           # weight of the published inflation target in firms' nominal growth beliefs (off)
         self.match_el = 0.5         # elasticity of the contact rate to labor-market tightness (matching function)
@@ -145,7 +146,9 @@ class Macro:
         self.w = np.full(F, self.W)
         self.gW_e = mp.pi_star
         self.theta = 1.0                          # last quarter's vacancies per unemployed worker
-        self.lnq = np.full(F, np.log(0.7))        # belief: hires per vacancy (fill rate)
+        self.lnphi = np.zeros(F)                  # belief: log share of planned labor actually obtained
+        self.lnq = np.full(F, np.log(0.7))        # belief: hires per vacancy (fill rate) at relative pay 1
+        self.Wbar_hist = [self.W] * 5
         self.lnapp = np.full(F, np.log(1.0) if mp.vacancies else np.log(0.15 * (self.z @ work) / F))   # belief: applicants (per vacancy) at the going wage
         self.lnQ = np.full(F, np.log(0.02))      # belief: quit rate at the going wage
         # ---------------- bank and government: government account is the residual that sets reserves to zero
@@ -182,7 +185,7 @@ class Macro:
         return (W / (1 - a_)) ** (1 - a_) * (cK / a_) ** a_ / self.mp.Z
 
     # ------------------------------------------------------------------ firm problems
-    def price_and_stock(self, W, rL):
+    def price_and_stock(self, W, rL, S_cap=None):
         """Quarter problem of each firm, from its own state (capital, inventory) and beliefs (demand level A,
         noise sigma), at the posted wage and loan rate and the last observed price index:
             max over p, S >= n:  p E[min(D, S)] + v E[(S - D)+] - C(S - n),   D = A (p/P)^(-e) xi,
@@ -214,6 +217,8 @@ class Macro:
                 g = p * pr + v[:, None] * (1 - pr) - Cp(S - n)
                 lo = np.where(g > 0, S, lo); hi = np.where(g > 0, hi, S)
             S = 0.5 * (lo + hi)
+            if S_cap is not None:                             # stock the firm expects it can have (labor it expects to get)
+                S = np.minimum(S, np.maximum(S_cap, n[:, 0])[:, None])
             d2 = (np.log(mu / S) - s_ ** 2 / 2) / s_
             Emin = mu - (mu * ndtr(d2 + s_) - S * ndtr(d2))
             val = p * Emin + v[:, None] * (S - Emin) - C(S - n)
@@ -296,12 +301,22 @@ class Macro:
         return L, val
 
     def full_cost(self, x, We, a, Q, r):
-        """Cost per worker per quarter at relative wage x: the wage plus recruiting time, amortized over the expected
-        tenure (separations and quits) at the firm's cost of funds; vacancies fill at rate min(1, a x^eta)."""
+        """Cost per worker per quarter at relative pay x: the wage plus the cost of replacing departures (recruiting
+        time c_v per vacancy, vacancies filling at rate min(1, a x^eta)), amortized at the firm's cost of funds over
+        expected tenure (separations, quits Q x^-eta). a, Q: the firm's beliefs at relative pay 1."""
         mp, hp = self.mp, self.hp
         q = np.minimum(1.0, a * x ** mp.eta_L)
         turnover = hp.sep + Q * x ** (-mp.eta_L)
         return x * We * (1 + (r + turnover) * mp.c_v / np.maximum(q, 1e-3))
+
+    def pay_review(self, We, a, Q, r):
+        """Annual pay review (Salop turnover model): the relative pay that minimizes cost per worker,
+            min over x:  x We [1 + (r + sep + Q x^-eta) c_v / min(1, a x^eta)],
+        with We the market pay expected over the coming year (last observed x last year's market growth). The
+        answer does not depend on the firm's sales: those set how many it hires, not what it pays."""
+        xg = np.linspace(0.7, 1.4, 281)[None, :]
+        c = self.full_cost(xg, We, a[:, None], Q[:, None], r[:, None])
+        return xg[0, c.argmin(1)] * We
 
     def wage_choice_v(self, We, p, mu, v, a, Q, floor_x, r):
         """Wage problem with costly vacancies (static beliefs, the wage persists):
@@ -374,6 +389,8 @@ class Macro:
             cur = job[idx]
             ok = (cur < 0) | (w[ch] * np.exp(zeta[idx]) > w[np.maximum(cur, 0)])   # on-the-job searchers move if the offer beats their job
             idx, ch, cur = idx[ok], ch[ok], cur[ok]
+            if len(idx) == 0:
+                return V_left
             if count_apps:
                 apps[:] += np.bincount(ch, z[idx], F)
             o = np.lexsort((key[idx], ch))
@@ -455,9 +472,11 @@ class Macro:
             L_prev = np.bincount(self.job[self.job >= 0], self.z[self.job >= 0], F)
             w0 = np.maximum(self.w, We)
             if mp.vacancies:
+                # market pay growth: last year's, from published pay data
+                g_mkt = (self.Wbar_hist[-1] / self.Wbar_hist[-5]) ** 0.25 - 1
+                We = self.Wbar_obs() * (1 + g_mkt)
                 qf = np.exp(self.lnq)
-                p0, S0, mu0, v0 = self.price_and_stock(w0, r_own)
-                w_post, _ = self.wage_choice_v(We, p0, mu0, v0, B, Q, self.w / We, r_own)
+                w_post = np.maximum(self.w, self.pay_review(We * (1 + g_mkt) ** 1.5, qf, Q, r_own))   # no nominal cuts
             else:
                 p0, S0, mu0, v0 = self.price_and_stock(w0, r_own)
                 w_post, L_cap = self.wage_choice(We, p0, mu0, v0, L_prev, B, Q, self.w / We)
@@ -467,7 +486,7 @@ class Macro:
             if mp.vacancies:
                 # price and stock at the wage; keep incumbents while their product covers the wage,
                 # hire toward the labor at which it covers the full cost (wage + recruiting)
-                omega = self.full_cost(w_post / We, We, B, Q, r_own)
+                omega = self.full_cost(w_post / We, We, qf, Q, r_own)
                 self.p, S, mu_s, v = self.price_and_stock(w_post, r_own)   # price on the marginal cost of its workers
                 L_keep = self.labor_for_cost(w_post[:, None], self.p, mu_s, v)[0][:, 0]
                 L_tgt = self.labor_for_cost(omega[:, None], self.p, mu_s, v)[0][:, 0]
@@ -478,19 +497,27 @@ class Macro:
         else:
             W_firm = W
             self.p, S, mu_s, v = self.price_and_stock(W, r_own)
+        if mp.wage_posting and mp.cap_aware:
+            # the firm expects to get only a share of the labor it plans for (belief from its own record), so it
+            # prices and stocks for the output that labor can make: a firm short of workers raises its price
+            L_plan = L_need(np.maximum(0.0, S - self.inv))
+            cap = self.inv + Z * self.K ** a_ * (np.exp(self.lnphi) * L_plan) ** (1 - a_)
+            self.L_plan_raw = L_plan
+            self.p, S, mu_s, v = self.price_and_stock(W_firm, r_own, S_cap=cap)
         P = float(self.p @ self.share_prev)                   # posted price index (last quarter's shares)
         y_plan = np.maximum(0.0, S - self.inv)
         K_next = self.capital(W_firm, r_own, mu_s)
         I_plan = np.maximum(0.0, K_next - (1 - mp.delta) * self.K)
         Ld = L_need(y_plan)
         Ld_pre = Ld.sum()
+        Ld_req = Ld.copy()                                    # production labor the firm asks for
 
         # 4. labor market (efficiency units)
         Lforce = np.where(work, self.z, 0.0)
         if mp.wage_posting:
             if mp.vacancies:
                 Ld, emp, quits, apps, V, L_prev = self.labor_market(w_post, We, L_keep, work, L_target=L_tgt, q_fill=qf)
-                obs_f = np.log(np.maximum(self.hired_last, 1e-6) / np.maximum(V, 1e-9))
+                obs_f = np.log(np.maximum(self.hired_last, 1e-6) / np.maximum(V, 1e-9)) - mp.eta_L * np.log(w_post / We)
                 self.lnq = np.where(V > 1e-9, (1 - mp.g_L) * self.lnq + mp.g_L * obs_f, self.lnq)
                 Lw = Ld.copy()                                    # workers paid
                 Ld = np.maximum(Ld - mp.c_v * V, 0.0)             # production labor: recruiting takes time
@@ -527,6 +554,9 @@ class Macro:
             L_emp = emp @ self.z
             Ld = Ld * L_emp / max(Ld.sum(), 1e-12)
         y = Z * self.K ** a_ * Ld ** (1 - a_)
+        if mp.wage_posting and mp.cap_aware:                   # belief: share of planned labor the firm actually gets
+            obs_phi = np.clip(np.log(np.maximum(Ld, 1e-9) / np.maximum(Ld_req, 1e-9)), -3.0, 0.0)
+            self.lnphi = (1 - mp.g_L) * self.lnphi + mp.g_L * obs_phi
         wb_f = W_firm * (Lw if mp.wage_posting else Ld)
         # financing: borrow what cash does not cover of wages and planned investment
         new_loan = np.maximum(0.0, wb_f + P * I_plan - self.m)
@@ -687,6 +717,7 @@ class Macro:
         W_new = W * (1 + mp.w_index * self.pi_e + (1 - mp.w_index) * mp.pi_star + mp.phi_W * tight)
         if mp.wage_posting:
             W_obs = self.Wbar_obs()
+            self.Wbar_hist.append(W_obs)
             self.gW_e = (1 - mp.g_W) * self.gW_e + mp.g_W * (W_obs / W - 1)
             self.W = W_obs
         else:
