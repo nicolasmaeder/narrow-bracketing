@@ -33,7 +33,12 @@ Since the last version:
 
 - **Savings rate from the bank's profit problem.** Each bank values every deposit at the policy rate (what replacing it would cost), pays the savings rate only on savings, and faces depositors who choose banks by logit and split checking and savings by Baumol–Tobin. At the calibrated market power (`a_D=150`), the savings spread averages about 2.9 points, pass-through is close to one, and checking holds about 12% of household deposits. With weaker market power (`a_D=250`), the spread widens with the policy rate (0.8 points below 3%, 1.6 above 6%), as in the deposits channel, but the economy runs with higher unemployment. The average deposit-rate pass-through in the data (about 0.4) is not yet matched.
 
-Long run over 3 seeds: unemployment 4.8–5.4% (sd 1.5–1.8 points), inflation about 2.5%, policy rate about 5.7%, labor share about 0.50.
+- **Consistent valuation of unsold stock.** Stock is valued at its marginal production cost at the wage, as inventory is valued at cost in accounting, instead of a unit cost tied to the price level. This removes a deflation feedback.
+- **Customer market.** Half of buyers re-shop each quarter. Firms value customers won or lost at the margin over the relationship, and stockouts cost customers.
+
+Long run over 3 seeds: unemployment 4.1–4.8% (sd 0.75–1.0 points), inflation about 2.6% (sd 1.6–2.0), 95% of goods demand met, labor share about 0.48.
+
+State-dependent pricing (`menu_cost`) remains unstable even with the customer market: firms change price in 66–81% of quarters.
 
 Open:
 - About 11% of goods demand goes unmet in a quarter. Unmet orders effectively become backlog, since households keep the cash and spend it later.

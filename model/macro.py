@@ -97,6 +97,8 @@ class MParams:
         self.public_labor = True    # with vacancies: fill and quit beliefs from published labor-market statistics
         self.censored = False       # True: firms see only sales and sell-outs (censored); False: they also see backorders (orders placed with them that they could not fill), not spillover from rivals
         self.cap_aware = True       # firms price for the output the labor they expect to get can make
+        self.stockout_loss = 0.3    # share of customers turned away by a stockout who switch sellers (Anderson, Fitzsimons and Simester 2006)
+        self.rho_c = 0.5            # customer market: share of buyers who re-shop each quarter (1 = all re-shop, no customer base)
         self.menu_cost = 0.0        # > 0: state-dependent pricing with this menu cost (share of revenue); 0: fixed review_p
         self.k_full = False         # capital decision uses the wage-based labor cost (as inventory)
         self.v_full = False         # inventory valued at production cost at the wage (recruiting costs are not inventoriable), not including marginal hiring cost
@@ -164,6 +166,8 @@ class Macro:
         self.p = np.full(F, P0)
         self.share_prev = np.full(F, 1 / F)
         self.share_prev_used = self.share_prev.copy()
+        self.cust = np.full(F, 1 / F)                 # customer base (share of buyers who buy from the firm)
+        self._Stot = 0.0
         # ---------------- labor market state: who works where, posted wages, firms' beliefs
         self.job = np.full(N, -1)
         ew = np.nonzero(self.emp & work)[0]
@@ -227,7 +231,7 @@ class Macro:
         mp = self.mp; a_, Z, F = mp.alpha, mp.Z, mp.F
         Pref = self.P_ref()
         self.Pref_used = Pref
-        e_f = mp.eps * (1 - self.share_prev)                  # own-price elasticity buyers' choices imply
+        e_f = self.elast(short=True)                          # own-price elasticity buyers' choices imply (this quarter)
         sig = np.sqrt(self.sig2)
         uc = self.unit_cost(W, Pref * (rL + mp.delta))       # rL here is the firm's own marginal cost of funds (array)
         kfac = (Z * self.K ** a_) ** (1 / (1 - a_))
@@ -264,6 +268,15 @@ class Macro:
             d2 = (np.log(mu / S) - s_ ** 2 / 2) / s_
             Emin = mu - (mu * ndtr(d2 + s_) - S * ndtr(d2))
             val = p * Emin + v[:, None] * (S - Emin) - C(S - n)
+            if mp.rho_c < 1:
+                # customer market: the firm values the customers its price wins or loses at the margin they bring in
+                # over the expected life of the relationship (static beliefs), CLV = Stot (1 - mc/p) / (r + rho)
+                sh = self.cust[:, None]
+                Lp = sh * (p / Pref) ** (-mp.eps * (1 - sh))
+                mc = v[:, None] * (1 + rL[:, None] if np.ndim(rL) else 1 + rL) / (1 - mp.inv_decay)
+                clv = self._Stot * np.maximum(1 - mc / p, 0.0) / ((rL[:, None] if np.ndim(rL) else rL) + mp.rho_c)
+                served = np.minimum(1.0, Emin / np.maximum(mu, 1e-12))      # share of demand it expects to serve
+                val = val + mp.rho_c * Lp * clv * served - mp.stockout_loss * (1 - served) * sh * clv
             return S, mu, val
 
         p = uc[:, None] * np.linspace(0.9, 1.8, 91)[None, :]
@@ -393,7 +406,7 @@ class Macro:
         L_flow = L_need(mu)
         T = mp.q_ref / np.maximum(q_bel, 1e-3)
         Lb = np.maximum(L_stay, 1.0)
-        e_f = mp.eps * (1 - self.share_prev)
+        e_f = self.elast(short=False)                         # long run: hires are valued over their tenure
         # marginal revenue product along the firm's own demand belief: selling more output y means a lower price,
         # p(y) = p (y / mu)^(-1/e), and marginal revenue p(y) (1 - 1/e)
         def mrp(L):
@@ -469,6 +482,16 @@ class Macro:
         rL = br(aL, self.rL_post, -1.0, lambda x, sh: -(x * (1 - lam) - i - (1 - lam) / (aL * (1 - sh))))  # >0: raise rL
         self.rd_post, self.rL_post = rd, rL
         return rd, rL
+
+    def elast(self, short=True, share=None):
+        """Own-price elasticity of a firm's demand implied by buyers' choices: nominal spending shares are logit in
+        price (elasticity eps (1 - s)), so quantities add 1; in a customer market only a share rho_c of buyers re-shop
+        each quarter, so the short-run elasticity is 1 + rho_c eps (1 - s)."""
+        mp = self.mp
+        s = self.share_prev if share is None else share
+        if mp.rho_c < 1:
+            return 1 + (mp.rho_c if short else 1.0) * mp.eps * (1 - s)
+        return mp.eps * (1 - s)
 
     def anchored(self, g_obs):
         """Belief about nominal growth: Bayesian with a prior centered on the published inflation target that is
@@ -856,7 +879,13 @@ class Macro:
         avail = self.inv.copy() if mp.prod_lag else self.inv + y
         # buyers choose among firms by random utility (logit): shares proportional to (p/P)^(-eps) x taste
         wts = (self.p / P) ** (-mp.eps) * np.exp(mp.taste_sd * self.rng.standard_normal(F))
-        q_dem = (wts / wts.sum()) * S_tot / self.p
+        if mp.rho_c < 1:
+            # customer market: a share rho_c of buyers shop around (logit); the rest stay with their seller
+            self.cust = (1 - mp.rho_c) * self.cust + mp.rho_c * wts / wts.sum()
+            q_dem = self.cust * S_tot / self.p
+        else:
+            q_dem = (wts / wts.sum()) * S_tot / self.p
+        self._Stot = S_tot
         sold = np.minimum(q_dem, avail)
         spare = avail - sold
         unmet = ((q_dem - sold) * self.p).sum()
@@ -876,6 +905,11 @@ class Macro:
         if getattr(self, "trace_on", False) and mp.vacancies:
             self.trace[-1].update(sold=float(sold[0]), dem=float(q_dem[0]), avail=float(avail[0]))
         self._qd, self._sold, self._avail = q_dem.copy(), sold.copy(), avail.copy()
+        if mp.rho_c < 1:
+            # customers who found the firm sold out leave with probability stockout_loss and re-shop next quarter
+            unserved = np.maximum(q_dem - np.minimum(q_dem, avail), 0.0) / np.maximum(q_dem, 1e-12)
+            lost = mp.stockout_loss * unserved * self.cust
+            self.cust = self.cust - lost + lost.sum() * wts / wts.sum()
         self.share_prev_used = self.share_prev
         self.share_prev = revenue / max(spent, 1e-12)
 
@@ -976,7 +1010,7 @@ class Macro:
         # 8. learning, observed aggregates, next quarter's wage
         loss_rate = loss.sum() / max((self.loan + loss).sum(), 1e-12)
         self.loss_e = (1 - mp.g_loss) * self.loss_e + mp.g_loss * loss_rate
-        e_f = mp.eps * (1 - self.share_prev_used)
+        e_f = self.elast(short=True, share=self.share_prev_used)
         if mp.censored:
             # the firm sees its sales and whether it sold out, not the customers it turned away or why buyers came.
             # Not sold out: sales are its demand. Sold out: demand was at least its stock, and the firm updates on
