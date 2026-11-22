@@ -80,6 +80,7 @@ class MParams:
         self.wage_posting = True    # False = placeholder wage rule (v3 results)
         self.eta_L = 6.0            # workers' elasticity of job choice to the relative wage (logit)
         self.ojs = 0.10             # share of employed workers searching on the job each quarter
+        self.censored = True        # firms learn demand from sales and sell-outs only (censored demand)
         self.cap_aware = True       # firms price for the output the labor they expect to get can make
         self.review_q = 4           # quarters between a firm's wage reviews (staggered across firms): annual
         self.anchor = 0.0           # weight of the published inflation target in firms' nominal growth beliefs (off)
@@ -705,9 +706,23 @@ class Macro:
         loss_rate = loss.sum() / max((self.loan + loss).sum(), 1e-12)
         self.loss_e = (1 - mp.g_loss) * self.loss_e + mp.g_loss * loss_rate
         e_f = mp.eps * (1 - self.share_prev_used)
-        err = np.log(np.maximum(q_dem, 1e-12)) + e_f * np.log(self.p / self.Pref_used) - self.lnA
-        self.lnA += mp.g_A * err
-        self.sig2 = np.maximum((1 - mp.g_sig) * self.sig2 + mp.g_sig * err ** 2, 1e-4)
+        if mp.censored:
+            # the firm sees its sales and whether it sold out, not the customers it turned away or why buyers came.
+            # Not sold out: sales are its demand. Sold out: demand was at least its stock, and the firm updates on
+            # the mean of its belief given that (truncated lognormal), i.e. by what Bayes' rule implies.
+            pred = self.lnA - e_f * np.log(self.p / self.Pref_used) - self.sig2 / 2
+            sd = np.sqrt(self.sig2)
+            out = sold >= avail * (1 - 1e-9)
+            a_ = np.clip((np.log(np.maximum(avail, 1e-12)) - pred) / sd, -8, 8)
+            mills = np.exp(-a_ ** 2 / 2) / np.sqrt(2 * np.pi) / np.maximum(1 - ndtr(a_), 1e-12)
+            obs = np.where(out, pred + sd * mills, np.log(np.maximum(sold, 1e-12)))
+            err = obs - pred
+            self.lnA += mp.g_A * err
+            self.sig2 = np.where(out, self.sig2, np.maximum((1 - mp.g_sig) * self.sig2 + mp.g_sig * err ** 2, 1e-4))
+        else:
+            err = np.log(np.maximum(q_dem, 1e-12)) + e_f * np.log(self.p / self.Pref_used) - self.lnA
+            self.lnA += mp.g_A * err
+            self.sig2 = np.maximum((1 - mp.g_sig) * self.sig2 + mp.g_sig * err ** 2, 1e-4)
         pi = P_paid / self.P_prev - 1
         self.pi_hist.append(pi)
         self.pi_e = (1 - mp.g_pi) * self.pi_e + mp.g_pi * pi
