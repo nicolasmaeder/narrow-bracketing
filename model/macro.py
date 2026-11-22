@@ -99,7 +99,7 @@ class MParams:
         self.cap_aware = True       # firms price for the output the labor they expect to get can make
         self.stockout_loss = 0.3    # share of customers turned away by a stockout who switch sellers (Anderson, Fitzsimons and Simester 2006)
         self.rho_c = 0.5            # customer market: share of buyers who re-shop each quarter (1 = all re-shop, no customer base)
-        self.menu_cost = 0.0        # > 0: state-dependent pricing with this menu cost (share of revenue); 0: fixed review_p
+        self.menu_cost = 0.007      # state-dependent pricing: change price when the expected gain exceeds this share of revenue (Levy et al. 1997: 0.7%); 0: fixed review_p
         self.k_full = False         # capital decision uses the wage-based labor cost (as inventory)
         self.v_full = False         # inventory valued at production cost at the wage (recruiting costs are not inventoriable), not including marginal hiring cost
         self.v_marginal = True      # unsold stock valued at the marginal cost of replacing it (internal labor cost), not at a price-level-based unit cost

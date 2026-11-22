@@ -27,4 +27,4 @@ show("Policy-rate shock +1pp, current planning return", "rate_current", "base_cu
 for scen, base, lab in [("check", "base", "check"), ("withhold", "base", "withholding")]:
     x = resp(scen, base, "spend_h", "gdp")
     c = x[:, :8].sum(1)
-    print(f"\ncumulative household spending, 8 quarters, {lab}: {c.mean():.2f}% of quarterly GDP [{np.percentile(c,5):.2f},{np.percentile(c,95):.2f}]  (transfer = 400%)")
+    print(f"\ncumulative household spending, 8 quarters, {lab}: {c.mean():.2f}% of quarterly GDP [{np.percentile(c,5):.2f},{np.percentile(c,95):.2f}]  (transfer = 4.00%)")
