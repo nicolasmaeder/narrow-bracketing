@@ -66,7 +66,7 @@ class MParams:
         self.phi_G = 0.02           # tax response to debt gap
         self.g_tax = 0.05           # gain on the observed budget share used to set the tax rate
         # central bank
-        self.i_star = 0.0075        # neutral policy rate per quarter (3% a year: about 1% real, in line with estimates of r*; the growing economy runs near u* and pi* at it)
+        self.i_star = 0.0125        # neutral policy rate per quarter (5% a year)
         self.pi_star = 0.005        # inflation target per quarter (2% a year)
         self.u_star = 0.05
         self.phi_pi, self.phi_u = 1.5, 0.1
@@ -107,7 +107,7 @@ class MParams:
         self.prod_lag = True        # production takes a quarter: goods made now are sold from next quarter on
         self.review_p = 3           # quarters between a firm's price reviews (staggered); 1 = every quarter
         self.wage_forecast = True   # firms forecast market pay growth from published inflation and unemployment
-        self.g_F = 0.05             # forgetting rate of that forecast (discounted least squares)
+        self.g_F = 0.02             # forgetting rate of that forecast (discounted least squares)
         self.review_q = 4           # quarters between a firm's wage reviews (staggered across firms): annual
         self.anchor = 0.0           # weight of the published inflation target in firms' nominal growth beliefs (off)
         self.match_el = 0.5         # elasticity of the contact rate to labor-market tightness (matching function)
@@ -135,14 +135,21 @@ class MParams:
         self.adopt_cost = 0.02      # cost of adopting a technique (workers' time), share of a quarter's revenue
         self.g_T = 0.02             # forgetting rate on the firm's own record of technique turnover
         self.g_Y = 0.02             # forgetting rate on published real growth (final sales, labor productivity)
+        self.deficit_rule = False   # tax rule allows the deficit that keeps debt at its target share of growing GDP
+        self.invest_lr = False      # capital evaluated at the long-run cost of funds plus a hurdle premium
+        self.fund_flow = False      # fund's valuation multiple moves with members' net flows (inelastic markets)
+        self.k_rev = 0.02           # quarterly reversion of the multiple toward its fundamental value
+        self.M_flow = 5.0           # price impact of flows: Gabaix and Koijen (2021) estimate about 5
+        self.g_s = 0.05             # forgetting rate on own sales used to plan capacity
         self.hurdle = 0.0125        # hurdle premium of firms' investment discount rate over their long-run cost of funds (5% a year)
         self.tau_min = 0.0          # lowest payroll tax rate (negative = wage subsidy)
-        self.retiree_income = True  # retirees' reference income tracks their own income (pension + drawdown)
-        self.anchor_W = 0.0         # weight of (inflation target + published productivity growth) in firms' pay-growth forecast
+        self.retiree_income = False # retirees' reference income tracks their own income (pension + drawdown)
+        self.anchor_W = 0.5         # weight of (inflation target + published productivity growth) in firms' pay-growth forecast
         self.pay_prod = False        # pay forecast uses published productivity growth as a regressor
-        self.bequest = True         # estates go to heirs (the entrant replacing the deceased), not to the government
+        self.bequest = False        # estates go to heirs (the entrant replacing the deceased), not to the government
         self.r_assumed = 0.0        # > 0: fund values firms at this published assumed return instead of the long-run deposit rate + premium
         self.market_belief = True   # firms' demand belief = own market position x published market size
+        self.exo_ramp = 0           # diagnostic: quarters over which exogenous growth ramps up
         self.exo_g = 0.0            # diagnostic: exogenous labor-augmenting growth per quarter instead of ideas
         self.burn_hh = 600          # household-only burn-in for the initial distribution
         self.seed = 1
@@ -189,6 +196,7 @@ class Macro:
         self.lnlam0 = np.log(mp.R0) + mp.pK * np.log(mp.theta_I * y0 / K0) + mp.pL * np.log(mp.theta_I * y0 / L0)
         self.poolK = np.array([y0 / K0]); self.poolL = np.array([y0 / L0])   # stock of known ideas (useful part)
         self.n_ideas = 0
+        self.s_lr = np.full(F, y0)               # firm's normal sales (discounted average of its own)
         self.r_lr_f = np.full(F, mp.i_star + 0.005)   # firm's long-run cost of funds (discounted average of its own)
         self.turn = np.full(F, 0.05)             # belief: rate at which the firm's technique is superseded (own record)
         self.gY = mp.g_N / mp.pL if mp.tech else 0.0   # published real growth of final sales (discounted average)
@@ -250,6 +258,7 @@ class Macro:
             self.Ehat = np.full(F, E0)
             nav0 = F * max(E0, 0) / (mp.r_assumed if mp.r_assumed else rb0 + mp.erp) + self.E_B
             self.a *= nav0 / self.a.sum()
+            self.mult = 1.0 / (mp.r_assumed if mp.r_assumed else rb0 + mp.erp)   # earnings multiple (quarters)
         else:
             self.Ehat = np.zeros(F)
         self.g = 0.0
@@ -429,7 +438,7 @@ class Macro:
                 val = val + mp.rho_c * Lp * clv * served - mp.stockout_loss * (1 - served) * sh * clv
             return S, mu, val
 
-        p = uc[:, None] * np.linspace(0.9, 1.8, 91)[None, :]
+        p = uc[:, None] * np.exp(np.linspace(np.log(0.9), np.log(4.0), 121))[None, :]   # wide enough never to bind
         S, mu, val = solve(p)
         k = val.argmax(1)
         pc = p[np.arange(F), k]
@@ -780,9 +789,9 @@ class Macro:
         debt = -self.g
         if self.budget_prev is not None:
             spend_net, wb_prev = self.budget_prev
-            # the rule allows the deficit that keeps debt at its target share of GDP as the economy grows (published
-            # nominal growth of final sales)
-            sh = (spend_net - mp.d_target * GDP_a * self.gS) / wb_prev
+            # the rule allows the deficit that keeps debt at its target share of GDP as the economy grows
+            # (published trend real growth plus the inflation target, not realized nominal growth, which would feed inflation)
+            sh = (spend_net - (mp.d_target * GDP_a * (self.gY + mp.pi_star) if mp.deficit_rule else 0.0)) / wb_prev
             self.tau_s = sh if self.tau_s is None else (1 - mp.g_tax) * self.tau_s + mp.g_tax * sh
             self.tau = float(np.clip(self.tau_s + mp.phi_G * (debt / GDP_a - mp.d_target), mp.tau_min, 0.7))
         tau = self.tau + tax_shift
@@ -796,10 +805,14 @@ class Macro:
             self.lnA = self.ln_a + np.log(self.S_last * np.exp(self.gS) / self.P_ref())
         self._adopt_L = np.zeros(F)
         if mp.tech and mp.exo_g > 0:                          # diagnostic: smooth exogenous labor-augmenting growth
-            self.AL = self.AL * np.exp(mp.exo_g); self.poolL = self.poolL * np.exp(mp.exo_g)
+            ge = mp.exo_g * min(1.0, self.t / mp.exo_ramp) if mp.exo_ramp else mp.exo_g
+            self.AL = self.AL * np.exp(ge); self.poolL = self.poolL * np.exp(ge)
         elif mp.tech:                                         # technique choice at last quarter's own wage and price
-            self.adopt(self.w if mp.wage_posting else np.full(F, W), self.P_ref() * (r_own + mp.delta), self.p, r_own,
-                       W, self.P_ref() * (float(np.mean(r_own)) + mp.delta))
+            # a technique is long-lived: it is evaluated at the same discount rate as capital (long-run cost of funds
+            # plus the hurdle premium when invest_lr)
+            r_T = self.r_lr_f + mp.hurdle if mp.invest_lr else r_own
+            self.adopt(self.w if mp.wage_posting else np.full(F, W), self.P_ref() * (r_T + mp.delta), self.p, r_T,
+                       W, self.P_ref() * (float(np.mean(r_T)) + mp.delta))
         if mp.review_p > 1 or mp.menu_cost > 0:
             self._p_old = self.p.copy()
             self._rev_p = (np.arange(F) + self.t + 1) % mp.review_p == 0
@@ -931,7 +944,11 @@ class Macro:
         # of its own) plus a hurdle premium. Firms' discount rates are high and move little with interest rates
         # (Gormsen and Huber 2023; Sharpe and Suarez 2021)
         self.r_lr_f = (1 - mp.g_lr) * self.r_lr_f + mp.g_lr * r_own
-        K_next = self.capital(om_e if (mp.prod_lag and mp.v_marginal and mp.k_full) else W_firm, self.r_lr_f + mp.hurdle, mu_s)
+        # capacity is planned for normal sales: a discounted average of the firm's own sales, grown at published trend
+        # growth over the coming year (a one-quarter surge in orders does not justify new capacity: no accelerator loop)
+        s_cap = self.s_lr * np.exp(4 * self.gY) if mp.invest_lr else mu_s
+        K_next = self.capital(om_e if (mp.prod_lag and mp.v_marginal and mp.k_full) else W_firm,
+                              self.r_lr_f + mp.hurdle if mp.invest_lr else r_own, s_cap)
         I_plan = np.maximum(0.0, K_next - (1 - mp.delta) * self.K)
         Ld = L_need(y_plan)
         Ld_pre = Ld.sum()
@@ -1129,14 +1146,28 @@ class Macro:
         self.E_B -= div_B
         # fund values each firm at trailing earnings capitalized at its assumed return: the long-run deposit rate
         # it has observed (discounted average of its own experience) plus its published equity premium
-        r_f = mp.r_assumed if mp.r_assumed else self.rb_lr + mp.erp
-        V = np.maximum(self.Ehat, 0.0) / r_f
+        if mp.fund_flow:
+            # the fund posts the value of its firms as a multiple of their trailing earnings; the multiple moves with
+            # last quarter's net flow into the fund (inelastic markets, Gabaix and Koijen 2021: a flow of 1% of the
+            # market's value raises prices by about M = 5%)
+            V = np.maximum(self.Ehat, 0.0) * self.mult
+        else:
+            r_f = mp.r_assumed if mp.r_assumed else self.rb_lr + mp.erp
+            V = np.maximum(self.Ehat, 0.0) / r_f
         if mp.fund:
             # fund collects dividends, keeps cash for withdrawals, invests the rest in its firms (or raises cash
             # from them): holding deposits at rb while its firms borrow at rL loses money
             self.Fc += div_f.sum() + div_B
             need_c = mp.fund_cash_q * (-da[da < 0].sum())
             x = self.Fc - need_c
+            if mp.fund_flow:
+                # members' net purchases of fund units (contributions less withdrawals) move the posted multiple
+                # (inelastic markets); slow-moving value investors pull it back toward the fundamental multiple
+                # (trailing earnings at the long-run deposit rate plus the published premium)
+                nav_pre = V.sum() + self.E_B + self.Fc
+                flow = da.sum() / max(nav_pre, 1e-9)
+                m_fund = 1.0 / (self.rb_lr + mp.erp)
+                self.mult = float(np.clip(self.mult * np.exp(mp.M_flow * flow - mp.k_rev * np.log(self.mult / m_fund)), 4.0, 400.0))
             wv = V / V.sum() if V.sum() > 0 else np.full(F, 1 / F)
             self.m += x * wv; self.Fc -= x
             short = np.maximum(0.0, -self.m)
@@ -1222,6 +1253,7 @@ class Macro:
             self.gY = (1 - mp.g_Y) * self.gY + mp.g_Y * np.log(Y_real / self.Y_prev)
             self.gProd = (1 - mp.g_Y) * self.gProd + mp.g_Y * np.log(Y_real / L_emp / (self.Y_prev / self.L_prev_emp))
         self.Y_prev, self.L_prev_emp = Y_real, L_emp
+        self.s_lr = (1 - mp.g_s) * self.s_lr * np.exp(self.gY) + mp.g_s * np.maximum(q_dem, 1e-9)   # orders, incl. backorders
         self.gS = (1 - mp.g_Y) * self.gS + mp.g_Y * np.log(S_tot / self.S_last)
         self.S_last = S_tot
         pi = P_paid / self.P_prev - 1
@@ -1264,6 +1296,6 @@ class Macro:
                     withdraw=-da[da < 0].sum(), kappa_mean=float(self.kappa[work].mean()),
                     markup=float(np.mean(self.p)) / uc_rec,
                     inv_sales=self.inv.sum() / max(sold.sum(), 1e-12), sig=float(np.sqrt(self.sig2).mean()),
-                    V=V.sum(), Fc=self.Fc, adopt=self.adopt_last, gY=self.gY, n_ideas=self.n_ideas, pool=len(self.poolK) if mp.tech else 0,
+                    V=V.sum(), Fc=self.Fc, mult=getattr(self, 'mult', 0.0), adopt=self.adopt_last, gY=self.gY, n_ideas=self.n_ideas, pool=len(self.poolK) if mp.tech else 0,
                     AK=float(np.exp(np.mean(np.log(self.AK)))) if mp.tech else 1.0, AL=float(np.exp(np.mean(np.log(self.AL)))) if mp.tech else 1.0,
                     Lprod=float(Ld.sum()), Kuse=float(self.K.sum()), book=float((P * self.K + v * self.inv + self.m - self.loan).sum()))

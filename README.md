@@ -25,18 +25,15 @@ Code for a macro model that is computed one quarter at a time. Every agent decid
 `model/DECISIONS.md` lists every decision, its objective and its information. `model/check_principles.py` checks the accounting (reserves stay at zero to about 1e-15 of deposits) and that a quarter depends only on the state.
 
 Since the last version:
-- **Production takes a quarter.** Price rations stock on hand, and production targets next quarter's stock.
-- **One marginal labor cost.** Production is planned at the marginal cost of the labor that makes it, the same cost the hiring decision uses.
-- **Banks optimize.** Deposit and loan rates come from Monti–Klein profit maximization by 5 symmetric banks, with customers choosing banks by logit in the rate. Spreads are about 2% a year.
+- **Real growth, with the aggregate technology derived rather than assumed.** Each firm uses one technique (a capital and a labor productivity) in a CES technology with elasticity 0.5 (Oberfield and Raval). Ideas are public and arrive at a rate that grows over time (Jones 2005); each firm adopts the cheapest known technique at its own factor prices when the saving covers an adoption cost (its workers' time). No aggregate production function appears anywhere.
+- **Demand beliefs that survive growth.** A firm's expected demand is its own position in its market (learned from its orders) times the published size of the market, so the learned part is stationary.
+- **Balanced-growth household objective.** Consumption is valued relative to reference income, like the buffer and retirement terms, so the objective is homothetic (King, Plosser and Rebelo).
+- **Pay forecasts partly anchored** on the inflation target plus published productivity growth (as salary-budget surveys are), with a projection facility on the learned part.
+- **Bug fix:** the price grid stopped at 1.8 times unit cost; once productivity growth lowered unit costs, firms hit the cap and could not price away shortages, which drove boom-bust cycles.
 
-- **Two kinds of deposit.** Checking pays nothing; savings pay a rate set by the banks' profit problem. Households split their liquid balances by Baumol–Tobin, keeping about 31% in checking. Firms' cash sits in checking.
+Long run over 4 seeds (800 quarters): unemployment 3.6–4.5% (sd 0.9–1.6), inflation 2.4–2.6%, real growth about 2.0% a year, 95% of goods demand met.
 
-- **Savings rate from the bank's profit problem.** Each bank values every deposit at the policy rate (what replacing it would cost), pays the savings rate only on savings, and faces depositors who choose banks by logit and split checking and savings by Baumol–Tobin. At the calibrated market power (`a_D=150`), the savings spread averages about 2.9 points, pass-through is close to one, and checking holds about 12% of household deposits. With weaker market power (`a_D=250`), the spread widens with the policy rate (0.8 points below 3%, 1.6 above 6%), as in the deposits channel, but the economy runs with higher unemployment. The average deposit-rate pass-through in the data (about 0.4) is not yet matched.
-
-- **Consistent valuation of unsold stock.** Stock is valued at its marginal production cost at the wage, as inventory is valued at cost in accounting, instead of a unit cost tied to the price level. This removes a deflation feedback.
-- **Customer market.** Half of buyers re-shop each quarter. Firms value customers won or lost at the margin over the relationship, and stockouts cost customers.
-
-Long run over 3 seeds: unemployment 4.1–4.8% (sd 0.75–1.0 points), inflation about 2.6% (sd 1.6–2.0), 95% of goods demand met, labor share about 0.48.
+Derived aggregate technology (2 seeds, 700 quarters): technical change is labor-augmenting (labor productivity of techniques +2.0% a year, capital productivity +0.0–0.1%); the capital share is stable while the wage-rental ratio rises 2% a year, so the long-run aggregate elasticity of substitution is 0.96–1.00 (Cobb-Douglas) although each firm's is 0.5; over 5-year windows it is about zero. This is Jones's result, produced by firms' decisions.
 
 State-dependent pricing (`menu_cost`) remains unstable even with the customer market: firms change price in 66–81% of quarters.
 

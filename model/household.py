@@ -46,6 +46,10 @@ class Params:
         self.version = "sticky"        # 'fungible' | 'sticky' | 'calculator'
         self.R_plan = 1.0125            # calculator rule: fixed planning return per quarter (5% a year)
         self.band = 0.02                # calculator rule: re-plan when the required rate differs by more than this
+        self.c_rel = True               # consumption valued relative to reference income, u(P c / yhat): the whole objective
+                                        # is in units of own income, so it is homothetic and admits balanced growth
+                                        # (King, Plosser and Rebelo); with c_rel False, u(c) and real growth would make
+                                        # the buffer a luxury good
         self.seed = 0
         self.__dict__.update(kw)
         self.J = self.J_W + self.J_R
@@ -78,7 +82,7 @@ def solve(m, a, yhat, G, P, rb, ra, p: Params, choose_a: bool, a_lb=None, b_lb=0
 
     def spend(lmu):
         mu = np.exp(lmu)
-        c = (mu * P) ** (-1 / s)
+        c = (yhat / P) * (mu * yhat) ** (-1 / s) if p.c_rel else (mu * P) ** (-1 / s)
         xb = (p.psi_B * (1 + rb) / (mu * yhat)) ** (1 / sB) - p.eps_B
         db = np.maximum(xb * p.beta * yhat / (1 + rb), b_lb)
         if choose_a:
@@ -96,7 +100,7 @@ def solve(m, a, yhat, G, P, rb, ra, p: Params, choose_a: bool, a_lb=None, b_lb=0
         hi = np.where(over, hi, mid)
     c, db, da, _ = spend(0.5 * (lo + hi))
     xb = (1 + rb) * db / (p.beta * yhat)
-    U = crra(c, s) + p.psi_B * p.beta * crra(xb + p.eps_B, sB)
+    U = (crra(P * c / yhat, s) if p.c_rel else crra(c, s)) + p.psi_B * p.beta * crra(xb + p.eps_B, sB)
     if choose_a:
         xa = (1 + ra) * (a + da) / (G * yhat)
         U = U + p.psi_A * G * crra(np.maximum(xa, 1e-12), s)
@@ -112,7 +116,7 @@ def solve_accounts(m, b, a, yhat, G, P, rb, ra, p: Params, choose_a: bool, a_lb=
         return out[0], out[1], out[2], out[3] + add_a_term, np.zeros(m.shape, bool)
     cN, bN, dN, UN = solve(m, a, yhat, G, P, rb, ra, p, choose_a, a_lb=a_lb, b_lb=b)
     cI, bI, dI, UI = solve(m, a, yhat, G, P, rb, ra, p, choose_a, a_lb=a_lb, b_lb=0.0)
-    UI = UI - p.entry_cost * cI ** (1 - p.sigma)
+    UI = UI - p.entry_cost * ((P * cI / yhat) ** (1 - p.sigma) if p.c_rel else cI ** (1 - p.sigma))
     feasibleN = P * cN + bN + dN <= m * (1 + 1e-9)          # no-invasion needs income to cover spending
     UN = np.where(feasibleN, UN, -np.inf)
     inv = UI > UN
