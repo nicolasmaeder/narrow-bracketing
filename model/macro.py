@@ -80,6 +80,10 @@ class MParams:
         self.wage_posting = True    # False = placeholder wage rule (v3 results)
         self.eta_L = 6.0            # workers' elasticity of job choice to the relative wage (logit)
         self.ojs = 0.10             # share of employed workers searching on the job each quarter
+        self.hiring = "convex"      # vacancy mode: firms choose hires with convex recruiting costs ("convex") or post openings for the whole gap ("gap")
+        self.kappa_h = 12.5         # recruiting cost scale: average cost per hire = kappa_h x T x (hiring rate)^psi_h quarters of a worker's time
+        self.psi_h = 1.0            # convexity: marginal cost per hire = (1 + psi_h) x average (Blatter et al.: marginal about 2x average)
+        self.q_ref = 0.8            # job-filling rate at which tightness adds nothing to recruiting cost
         self.g_pub = 0.25           # forgetting rate on published labor statistics
         self.public_labor = True    # with vacancies: fill and quit beliefs from published labor-market statistics
         self.censored = True        # firms learn demand from sales and sell-outs only (censored demand)
@@ -310,9 +314,35 @@ class Macro:
         time c_v per vacancy, vacancies filling at rate min(1, a x^eta)), amortized at the firm's cost of funds over
         expected tenure (separations, quits Q x^-eta). a, Q: the firm's beliefs at relative pay 1."""
         mp, hp = self.mp, self.hp
-        q = np.minimum(1.0, a * x ** mp.eta_L)
         turnover = hp.sep + Q * x ** (-mp.eta_L)
+        if mp.hiring == "convex":                     # replacing departures at the convex recruiting cost
+            T = mp.q_ref / np.minimum(1.0, np.maximum(a, 1e-3) * x ** mp.eta_L)   # better pay fills openings faster
+            return x * We * (1 + (r + turnover) * mp.kappa_h * T * turnover ** mp.psi_h)
+        q = np.minimum(1.0, a * x ** mp.eta_L)
         return x * We * (1 + (r + turnover) * mp.c_v / np.maximum(q, 1e-3))
+
+    def hires_choice(self, p, mu, w, L_stay, r, Q, q_bel):
+        """Hiring problem (recruiting intensity with convex costs, Blatter et al. / Gavazza-Mongey-Violante): choose
+        hires H >= 0 to maximize  J-value of the hires - recruiting cost,
+            marginal value of a worker  J(L) = max(0, p MPL(L) - w) / (r + sep + Q),  zero beyond the labor needed for
+            expected sales;  recruiting time  R(H) = kappa T H (H / L)^psi,  T = q_ref / q_bel (published tightness).
+        FOC: J(L_stay + H) = w (1 + psi) kappa T (H / L)^psi."""
+        mp, hp = self.mp, self.hp; a_, Z = mp.alpha, mp.Z
+        L_need = lambda y: (np.maximum(y, 0) / (Z * self.K ** a_)) ** (1 / (1 - a_))
+        L_flow = L_need(mu)
+        T = mp.q_ref / np.maximum(q_bel, 1e-3)
+        Lb = np.maximum(L_stay, 1.0)
+        mpl = lambda L: (1 - a_) * p * Z * self.K ** a_ * np.maximum(L, 1e-9) ** (-a_)
+        J = lambda L: np.where(L < L_flow, np.maximum(0.0, mpl(L) - w), 0.0) / (r + hp.sep + Q)
+        g = lambda H: J(L_stay + H) - w * (1 + mp.psi_h) * mp.kappa_h * T * (H / Lb) ** mp.psi_h
+        lo = np.zeros_like(L_stay); hi = np.maximum(0.0, L_flow - L_stay)
+        for _ in range(50):
+            mid = 0.5 * (lo + hi)
+            pos = g(mid) > 0
+            lo = np.where(pos, mid, lo); hi = np.where(pos, hi, mid)
+        H = 0.5 * (lo + hi)
+        R = mp.kappa_h * T * H * (H / Lb) ** mp.psi_h
+        return H, R, L_flow
 
     def pay_review(self, We, a, Q, r):
         """Annual pay review (Salop turnover model): the relative pay that minimizes cost per worker,
@@ -350,7 +380,7 @@ class Macro:
         L = np.bincount(self.job[on], self.z[on], self.mp.F)
         return float(self.w @ L / L.sum()) if L.sum() > 0 else float(self.w.mean())
 
-    def labor_market(self, w, We, L_star, work, L_target=None, q_fill=None):
+    def labor_market(self, w, We, L_star, work, L_target=None, q_fill=None, hires=None):
         """Separations, layoffs, then search: unemployed workers and on-the-job searchers choose among hiring firms
         by random utility (logit in the relative wage, weighted by vacancies); firms take applicants in random
         order until vacancies are filled; a second round for the rejected unemployed. All draws have fixed size."""
@@ -377,7 +407,9 @@ class Macro:
         laid = (cum_in - z[order]) >= L_star[f_o] + 1e-12
         job[order[laid]] = -1
         L_now = np.bincount(job[job >= 0], z[job >= 0], F)
-        if L_target is None:
+        if hires is not None:                                         # hires the firm wants; openings implied at the believed fill rate
+            V = np.minimum(hires, np.maximum(0.0, L_target - L_now) + 1e-12); vac = V / max(self.q_bel, 0.05)
+        elif L_target is None:
             V = np.maximum(0.0, L_star - L_now); vac = V.copy()
         else:                                                         # hires wanted, and vacancies posted for them
             V = np.maximum(0.0, L_target - L_now); vac = V.copy()   # one open position per hire wanted (requisitions)
@@ -505,6 +537,13 @@ class Macro:
                 self.p, S, mu_s, v = self.price_and_stock(w_post, r_own)   # price on the marginal cost of its workers
                 L_keep = self.labor_for_cost(w_post[:, None], self.p, mu_s, v)[0][:, 0]
                 L_tgt = self.labor_for_cost(omega[:, None], self.p, mu_s, v)[0][:, 0]
+                if mp.hiring == "convex":
+                    x_ = w_post / We
+                    stay = L_prev * np.clip(1 - hp.sep - Q * x_ ** (-mp.eta_L), 0, 1)
+                    H_want, R_rec, L_flow = self.hires_choice(self.p, mu_s, w_post, stay, r_own, Q, np.minimum(1.0, qf * x_ ** mp.eta_L))
+                    mpl_fac = (1 - a_) * self.p * Z * self.K ** a_
+                    L_keep = np.minimum(L_flow, (mpl_fac / w_post) ** (1 / a_))
+                    L_tgt = stay + H_want
             else:
                 self.p, S, mu_s, v = self.price_and_stock(w_post, r_own)
                 S = np.minimum(S, self.inv + Z * self.K ** a_ * L_cap ** (1 - a_))
@@ -516,7 +555,10 @@ class Macro:
             # the firm expects to get only a share of the labor it plans for (belief from its own record), so it
             # prices and stocks for the output that labor can make: a firm short of workers raises its price
             L_plan = L_need(np.maximum(0.0, S - self.inv))
-            if mp.vacancies:
+            if mp.vacancies and mp.hiring == "convex":
+                L_exp = stay + H_want - R_rec                 # incumbents who stay + planned hires - recruiting time
+                cap = self.inv + Z * self.K ** a_ * np.maximum(L_exp, 0.0) ** (1 - a_)
+            elif mp.vacancies:
                 # with posted vacancies the firm knows its workforce: incumbents expected to stay, plus the hires its
                 # open positions are expected to bring at the published filling rate, minus time spent recruiting
                 x_ = w_post / We
@@ -532,7 +574,7 @@ class Macro:
             self._cap, self._Spre = cap, S.copy()
             p_unc, mu_unc = self.p.copy(), mu_s.copy()           # the plan the firm would choose with the workers it wants
             self.p, S, mu_s, v = self.price_and_stock(W_firm, r_own, S_cap=cap)
-        if mp.wage_posting and mp.vacancies:
+        if mp.wage_posting and mp.vacancies and mp.hiring != "convex":
             # workforce decisions look at the expected flow of sales, not this quarter's stock: the firm keeps and
             # hires the workers it needs to make what it expects to sell each quarter, as long as a worker's product
             # covers the wage (keep) or the wage plus recruiting cost (hire)
@@ -552,11 +594,12 @@ class Macro:
         Lforce = np.where(work, self.z, 0.0)
         if mp.wage_posting:
             if mp.vacancies:
-                Ld, emp, quits, apps, V, L_prev = self.labor_market(w_post, We, L_keep, work, L_target=L_tgt, q_fill=qf)
+                Ld, emp, quits, apps, V, L_prev = self.labor_market(w_post, We, L_keep, work, L_target=L_tgt, q_fill=qf,
+                                                                    hires=H_want if mp.hiring == "convex" else None)
                 obs_f = np.log(np.maximum(self.hired_last, 1e-6) / np.maximum(V, 1e-9)) - mp.eta_L * np.log(w_post / We)
                 self.lnq = np.where(V > 1e-9, (1 - mp.g_L) * self.lnq + mp.g_L * obs_f, self.lnq)
                 Lw = Ld.copy()                                    # workers paid
-                Ld = np.maximum(Ld - mp.c_v * V, 0.0)             # production labor: recruiting takes time
+                Ld = np.maximum(Ld - (R_rec if mp.hiring == "convex" else mp.c_v * V), 0.0)   # production labor: recruiting takes time
             else:
                 Ld, emp, quits, apps, V, L_prev = self.labor_market(w_post, We, Ld, work)
                 Lw = Ld
