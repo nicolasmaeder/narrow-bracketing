@@ -95,6 +95,8 @@ class MParams:
         self.public_labor = True    # with vacancies: fill and quit beliefs from published labor-market statistics
         self.censored = False       # True: firms see only sales and sell-outs (censored); False: they also see backorders (orders placed with them that they could not fill), not spillover from rivals
         self.cap_aware = True       # firms price for the output the labor they expect to get can make
+        self.menu_cost = 0.0        # > 0: state-dependent pricing with this menu cost (share of revenue); 0: fixed review_p
+        self.flow_price = False      # with production lags: a reviewed price is set for the flow at the marginal cost of supply
         self.prod_lag = True        # production takes a quarter: goods made now are sold from next quarter on
         self.review_p = 3           # quarters between a firm's price reviews (staggered); 1 = every quarter
         self.wage_forecast = True   # firms forecast market pay growth from published inflation and unemployment
@@ -259,7 +261,15 @@ class Macro:
         k2 = val2.argmax(1)
         idx = np.arange(F)
         p_o, S_o, mu_o = p2[idx, k2], S2[idx, k2], mu2[idx, k2]
-        if self.mp.review_p > 1 and getattr(self, "_p_old", None) is not None:
+        if self.mp.menu_cost > 0 and getattr(self, "_p_old", None) is not None:
+            # state-dependent pricing: the firm changes its price when the expected gain from re-optimizing (its own
+            # beliefs) exceeds a menu cost, a share of revenue at the old price (Levy et al. 1997)
+            S_f, mu_f, val_f = solve(self._p_old[:, None])
+            gain = val2[idx, k2] - val_f[:, 0]
+            rv = gain > self.mp.menu_cost * self._p_old * mu_f[:, 0]
+            self._rev_p = rv
+            p_o = np.where(rv, p_o, self._p_old); S_o = np.where(rv, S_o, S_f[:, 0]); mu_o = np.where(rv, mu_o, mu_f[:, 0])
+        elif self.mp.review_p > 1 and getattr(self, "_p_old", None) is not None:
             # prices are reviewed every review_p quarters (staggered); between reviews the firm keeps its posted
             # price and chooses only its stock
             S_f, mu_f, _ = solve(self._p_old[:, None])
@@ -577,7 +587,7 @@ class Macro:
         # marginal cost of funds: a borrower pays rL; a firm without loans is financed at the margin by its owner,
         # the fund, which requires the deposit rate plus its published equity premium
         r_own = np.where(self.loan > 0, rL, self.rb_lr + mp.erp)
-        if mp.review_p > 1:
+        if mp.review_p > 1 or mp.menu_cost > 0:
             self._p_old = self.p.copy()
             self._rev_p = (np.arange(F) + self.t + 1) % mp.review_p == 0
         if mp.wage_posting:
@@ -671,7 +681,20 @@ class Macro:
             # production takes a quarter: this quarter's sales come from stock on hand, which the price rations;
             # production now is for next quarter's stock, chosen against next quarter's demand (two quarters of
             # uncertainty) given the stock the firm expects to carry over
-            self.p, S, mu_s, v = self.price_and_stock(W_firm, r_own, S_cap=self.inv)
+            if mp.wage_posting and mp.vacancies and mp.hiring == "convex":
+                x_ = w_post / We
+                Tq = mp.q_ref / np.maximum(np.minimum(1.0, qf * x_ ** mp.eta_L), 1e-3)
+                mch = (1 + mp.psi_h) * mp.kappa_h * Tq * (H_want / np.maximum(stay, 1.0)) ** mp.psi_h
+                tenure_r = r_own + hp.sep + Q * x_ ** (-mp.eta_L)
+                om_e = w_post * (1 + np.where(H_want > 1e-9, mch * tenure_r, 0.0))
+            else:
+                om_e = W_firm
+            # a price kept for several quarters is set for the flow: jointly with the stock, at the marginal cost of
+            # supplying it (firms not reviewing keep their posted price); this quarter's sales come from stock on hand
+            if mp.flow_price:
+                self.p, _, mu_s, v = self.price_and_stock(om_e, r_own)
+            else:
+                self.p, S, mu_s, v = self.price_and_stock(W_firm, r_own, S_cap=self.inv)
             sd = np.sqrt(self.sig2)
             self._mu_lag, self._inv_lag = mu_s.copy(), self.inv.copy()
             d2 = (np.log(mu_s / np.maximum(self.inv, 1e-12)) - sd ** 2 / 2) / sd
@@ -681,11 +704,6 @@ class Macro:
                 # production is planned at the marginal cost of the labor that makes it, the same cost the hiring
                 # decision uses: the wage, plus (if the firm is adding workers) the marginal hiring cost spread over
                 # expected tenure
-                x_ = w_post / We
-                Tq = mp.q_ref / np.maximum(np.minimum(1.0, qf * x_ ** mp.eta_L), 1e-3)
-                mch = (1 + mp.psi_h) * mp.kappa_h * Tq * (H_want / np.maximum(stay, 1.0)) ** mp.psi_h
-                tenure_r = r_own + hp.sep + Q * x_ ** (-mp.eta_L)
-                om_e = w_post * (1 + np.where(H_want > 1e-9, mch * tenure_r, 0.0))
                 S_next = self.stock_target(om_e, self.p, mu_s, v, carry, sd * np.sqrt(2))
                 y_plan = np.maximum(0.0, S_next - carry)
                 y_plan = np.minimum(y_plan, Z * self.K ** a_ * np.maximum(L_exp, 0.0) ** (1 - a_))
@@ -965,7 +983,7 @@ class Macro:
                     Y=sold.sum(), C=c_real.sum(), I=I_real.sum(), GDP=GDP, fill=fill, inv=self.inv.sum(),
                     K=self.K.sum(), loans=self.loan.sum(), debt=-self.g, E_B=self.E_B, B=self.b.sum(),
                     A=self.a.sum(), M_f=self.m.sum(), defaults=int((loss > 0).sum()), loss_rate=loss_rate,
-                    reserves=self.reserves() - self.R0, theta=self.theta, vac=float(self.vac_last) if mp.wage_posting else 0.0, contact=float(self.c_rate_last), y=y.sum(), Ld_pre=Ld_pre, div=div_f.sum() + div_B, profit_share=(div_f.sum()) / max(GDP, 1e-12),
+                    reserves=self.reserves() - self.R0, theta=self.theta, price_changes=float(np.mean(np.abs(self.p / self._p_old - 1) > 1e-9)) if getattr(self, "_p_old", None) is not None else 1.0, vac=float(self.vac_last) if mp.wage_posting else 0.0, contact=float(self.c_rate_last), y=y.sum(), Ld_pre=Ld_pre, div=div_f.sum() + div_B, profit_share=(div_f.sum()) / max(GDP, 1e-12),
                     wage_share=wb_f.sum() / max(GDP, 1e-12), wage_disp=float(np.std(np.log(W_firm * np.ones(F)))), spend_h=S_h.sum() * fill, contrib=da[da > 0].sum(),
                     withdraw=-da[da < 0].sum(), kappa_mean=float(self.kappa[work].mean()),
                     markup=float(np.mean(self.p)) / uc_rec,

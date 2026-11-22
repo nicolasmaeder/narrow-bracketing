@@ -34,4 +34,4 @@ Long run over 3 seeds: unemployment 5.7–6.5% (sd 2.3–3.5 points), inflation 
 Open:
 - About 11% of goods demand goes unmet in a quarter. Unmet orders effectively become backlog, since households keep the cash and spend it later.
 - Unemployment is somewhat volatile.
-- Review timing is fixed rather than state-dependent.
+- Review timing is fixed rather than state-dependent. State-dependent pricing (`menu_cost`, the price changes when the gain under own beliefs exceeds a share of revenue) is implemented but destabilizes the economy. Prices then become far more flexible than non-cuttable wages, and real-wage swings of ±40% drive mass layoffs and rehiring. The next ingredient is buyers' aversion to price changes (customer markets; Blinder et al.'s top reason for sticky prices).
