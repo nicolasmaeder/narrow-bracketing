@@ -88,6 +88,7 @@ class MParams:
         self.public_labor = True    # with vacancies: fill and quit beliefs from published labor-market statistics
         self.censored = False       # True: firms see only sales and sell-outs (censored); False: they also see backorders (orders placed with them that they could not fill), not spillover from rivals
         self.cap_aware = True       # firms price for the output the labor they expect to get can make
+        self.prod_lag = True        # production takes a quarter: goods made now are sold from next quarter on
         self.review_p = 3           # quarters between a firm's price reviews (staggered); 1 = every quarter
         self.wage_forecast = True   # firms forecast market pay growth from published inflation and unemployment
         self.g_F = 0.02             # forgetting rate of that forecast (discounted least squares)
@@ -142,7 +143,7 @@ class Macro:
         y0 = Z * K0 ** a_ * L0 ** (1 - a_)
         self.lnA = np.full(F, np.log(y0))        # belief: log demand at relative price 1
         self.sig2 = np.full(F, mp.taste_sd ** 2)  # belief: variance of log demand surprises
-        self.inv = np.full(F, 0.1 * y0)
+        self.inv = np.full(F, (1.1 if mp.prod_lag else 0.1) * y0)
         self.loan = np.zeros(F) if mp.fund else np.full(F, P0 * K0)   # with the fund, firms start equity-financed
         self.Kb = np.full(F, P0 * K0)            # book value of capital (historical cost)
         self.m = np.zeros(F)
@@ -303,6 +304,19 @@ class Macro:
         val = P_ * Emin + v_ * (S - Emin) - w * L
         k = val.argmax(1); idx = np.arange(F)
         return w[idx, k], E[idx, k]
+
+    def stock_target(self, W, p, mu, v, carry, sd):
+        """Next quarter's stock: p Pr(D > S) + v Pr(D < S) = marginal cost of producing S - carry this quarter."""
+        mp = self.mp; a_, Z = mp.alpha, mp.Z
+        kfac = (Z * self.K ** a_) ** (1 / (1 - a_))
+        Cp = lambda y: W / (1 - a_) * np.maximum(y, 0) ** (a_ / (1 - a_)) / kfac
+        lo = carry.copy(); hi = carry + 3 * mu * np.exp(4 * sd)
+        for _ in range(50):
+            S = 0.5 * (lo + hi)
+            pr = ndtr((np.log(mu / S) - sd ** 2 / 2) / sd)
+            g = p * pr + v * (1 - pr) - Cp(S - carry)
+            lo = np.where(g > 0, S, lo); hi = np.where(g > 0, hi, S)
+        return 0.5 * (lo + hi)
 
     def labor_for_cost(self, cost, p, mu, v):
         """Production labor at which the stocking FOC holds, p Pr(D > S) + v Pr(D < S) = cost x dL/dy, for each
@@ -619,8 +633,22 @@ class Macro:
             L_flow = L_need(mu_unc)
             L_keep = np.minimum(L_flow, (mpl_fac / w_post) ** (1 / a_))
             L_tgt = np.minimum(L_flow, (mpl_fac / omega) ** (1 / a_))
+        if mp.prod_lag:
+            # production takes a quarter: this quarter's sales come from stock on hand, which the price rations;
+            # production now is for next quarter's stock, chosen against next quarter's demand (two quarters of
+            # uncertainty) given the stock the firm expects to carry over
+            self.p, S, mu_s, v = self.price_and_stock(W_firm, r_own, S_cap=self.inv)
+            sd = np.sqrt(self.sig2)
+            d2 = (np.log(mu_s / np.maximum(self.inv, 1e-12)) - sd ** 2 / 2) / sd
+            Esales = mu_s - (mu_s * ndtr(d2 + sd) - self.inv * ndtr(d2))
+            carry = np.maximum(self.inv - Esales, 0.0) * (1 - mp.inv_decay)
+            S_next = self.stock_target(W_firm, self.p, mu_s, v, carry, sd * np.sqrt(2))
+            y_plan = np.maximum(0.0, S_next - carry)
+            if mp.wage_posting and mp.vacancies and mp.hiring == "convex":
+                y_plan = np.minimum(y_plan, Z * self.K ** a_ * np.maximum(L_exp, 0.0) ** (1 - a_))
         P = float(self.p @ self.share_prev)                   # posted price index (last quarter's shares)
-        y_plan = np.maximum(0.0, S - self.inv)
+        if not mp.prod_lag:
+            y_plan = np.maximum(0.0, S - self.inv)
         K_next = self.capital(W_firm, r_own, mu_s)
         I_plan = np.maximum(0.0, K_next - (1 - mp.delta) * self.K)
         Ld = L_need(y_plan)
@@ -730,7 +758,7 @@ class Macro:
         S_h = P * c
         S_I = P * I_plan
         S_tot = S_h.sum() + S_I.sum()
-        avail = self.inv + y
+        avail = self.inv.copy() if mp.prod_lag else self.inv + y
         # buyers choose among firms by random utility (logit): shares proportional to (p/P)^(-eps) x taste
         wts = (self.p / P) ** (-mp.eps) * np.exp(mp.taste_sd * self.rng.standard_normal(F))
         q_dem = (wts / wts.sum()) * S_tot / self.p
@@ -749,7 +777,7 @@ class Macro:
         self.m += revenue - S_I * fill
         S_I_f = P * I_plan
         self.K = (1 - mp.delta) * self.K + I_real
-        self.inv = (avail - sold) * (1 - mp.inv_decay)
+        self.inv = (avail - sold) * (1 - mp.inv_decay) + (y if mp.prod_lag else 0.0)
         if getattr(self, "trace_on", False) and mp.vacancies:
             self.trace[-1].update(sold=float(sold[0]), dem=float(q_dem[0]), avail=float(avail[0]))
         self.share_prev_used = self.share_prev
