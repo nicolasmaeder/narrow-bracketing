@@ -99,7 +99,7 @@ class MParams:
         self.cap_aware = True       # firms price for the output the labor they expect to get can make
         self.stockout_loss = 0.3    # share of customers turned away by a stockout who switch sellers (Anderson, Fitzsimons and Simester 2006)
         self.rho_c = 0.5            # customer market: share of buyers who re-shop each quarter (1 = all re-shop, no customer base)
-        self.menu_cost = 0.007      # state-dependent pricing: change price when the expected gain exceeds this share of revenue (Levy et al. 1997: 0.7%); 0: fixed review_p
+        self.menu_cost = 0.012      # state-dependent pricing: change price when the expected gain exceeds this share of revenue (Zbaracki et al. 2004: physical plus managerial costs about 1.2%); 0: fixed review_p
         self.k_full = False         # capital decision uses the wage-based labor cost (as inventory)
         self.v_full = False         # inventory valued at production cost at the wage (recruiting costs are not inventoriable), not including marginal hiring cost
         self.v_marginal = True      # unsold stock valued at the marginal cost of replacing it (internal labor cost), not at a price-level-based unit cost
@@ -435,7 +435,11 @@ class Macro:
                 mc = v[:, None] * (1 + rL[:, None] if np.ndim(rL) else 1 + rL) / (1 - mp.inv_decay)
                 clv = self._Stot * np.maximum(1 - mc / p, 0.0) / ((rL[:, None] if np.ndim(rL) else rL) + mp.rho_c)
                 served = np.minimum(1.0, Emin / np.maximum(mu, 1e-12))      # share of demand it expects to serve
-                val = val + mp.rho_c * Lp * clv * served - mp.stockout_loss * (1 - served) * sh * clv
+                # customers are worth their margin only up to what the firm can serve: buyers beyond its stock on
+                # hand add nothing (they find it sold out), so a firm that is sold out gains nothing by cutting its price
+                sh_cap = S * p / max(self._Stot, 1e-12)               # spending share the stock on hand can serve
+                won = np.minimum(mp.rho_c * Lp, np.maximum(sh_cap - (1 - mp.rho_c) * sh, 0.0))
+                val = val + won * clv - mp.stockout_loss * (1 - served) * sh * clv
             return S, mu, val
 
         p = uc[:, None] * np.exp(np.linspace(np.log(0.9), np.log(4.0), 121))[None, :]   # wide enough never to bind
