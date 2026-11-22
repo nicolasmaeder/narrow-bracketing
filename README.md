@@ -22,12 +22,17 @@ Code for a macro model that is computed one quarter at a time. Every agent decid
 
 ## Status
 
-- Wages are posted by firms (`wage_posting=True`). Each firm picks the wage that maximizes the quarter's expected profit, evaluating it by the workforce it sustains under its own beliefs about applicants and quits; it does not cut its own nominal wage (morale); it reviews wages once a year (staggered). Workers choose among hiring firms by logit in the relative wage; on-the-job searchers move if an offer plus a match-specific amenity beats their job.
-- Baseline is stable over 1,000 quarters and across seeds: unemployment ≈ 4.8%, inflation ≈ 2.3%, policy rate ≈ 3.8%, labor share ≈ 0.57.
-- Open problem: with a constant contact rate, unemployment is almost purely frictional, so demand shocks barely move it for two years. A matching function (`m_match`, contact rising with vacancies per unemployed) makes unemployment cyclical but produces a regular boom-bust cycle in which unemployment swings between 0% and 10%.
-- Firms learn demand only from their own sales and whether they sold out (`censored`): if stock was left, sales are demand; if they sold out, they update on the mean of their belief given demand ≥ stock (Bayes with a truncated lognormal). Unmet goods demand falls to about 1%.
-- Firms price for the output that the labor they expect to get can make (`cap_aware`): each firm learns from its own record what share of the labor it asks for it actually gets. Before this, firms priced as if they could always hire, so 6–12% of goods demand went unmet every quarter without raising prices.
-- Experimental, off by default: annual pay reviews as a turnover-cost problem (Salop) with (`vacancies=True`, recruiting takes `c_v` of a worker's time per vacancy; firms hire toward the labor whose product covers wage plus amortized recruiting cost, lay off when product falls below the wage) together with a matching function (`m_match`, `c_max`). Still unstable: vacancies explode when firms see spilled-over unmet demand as their own, and when firms stop hiring their fill-rate beliefs freeze at crisis levels, which drives a wage spiral during a slump.
-- Firms forecast market pay growth from published inflation and unemployment by discounted least squares (`wage_forecast`); without it, flat pay was self-confirming and nominal wages moved only in upward bursts. The central bank's neutral rate is now 5% (`i_star=0.0125`): at 3% the economy ran hot (unemployment 4.3%, inflation 3.2%). Baseline: unemployment about 5% (sd 1.6–2.5 points), inflation about 2%.
-- `wage_posting=False` reproduces the earlier placeholder wage rule.
-- Still to replace with objectives: bank rate margins. Planned: production lags.
+Current default economy (all decisions from objectives, beliefs from own records or published statistics):
+
+- **Pay**: reviewed once a year (staggered). Each firm chooses relative pay to minimize cost per worker including replacing departures (Salop turnover model). Market pay growth is forecast from published inflation and unemployment by discounted least squares. No nominal cuts (morale).
+- **Hiring**: each quarter a firm chooses hires. A worker's value is marginal revenue product minus wage over expected tenure, with marginal revenue along the firm's own demand belief. Hiring costs are convex in the firm's hiring rate (Blatter, Muehlemann & Schenker; Gavazza, Mongey & Violante) and rise with published tightness. They are paid as new hires' start-up output loss. Layoffs happen when marginal revenue product falls below the wage. A matching function with this quarter's openings and unemployed sets job contacts. Fill and quit beliefs are discounted averages of the published rates.
+- **Prices**: reviewed every three quarters (staggered). Between reviews firms choose only stock. Firms learn demand from their own sales and sell-outs (censored).
+- **Long run (3 seeds)**: unemployment 3.3–4.4% (sd 1.4–4.4 points), inflation about 2%, policy rate about 5.5%, unmet goods demand 6–8%.
+- **Policy responses (4 seeds)**:
+  - A stimulus check of 1% of GDP raises output 0.9% on impact; unemployment falls by up to 0.2 points.
+  - A 1-point rate rise lowers output by up to 0.7% and raises unemployment by 0.1–0.2 points. Inflation first rises about 1 point through firms' financing costs, then falls about 1 point.
+- **Open**:
+  - The labor share is 0.41–0.45 (US about 0.57).
+  - Openings per unemployed run 3–6 (US 0.5–2).
+  - One seed is much noisier.
+  - Bank rate margins are not yet derived from an objective.

@@ -44,7 +44,7 @@ class MParams:
         self.taste_sd = 0.10        # buyers' idiosyncratic taste shocks across firms (sd of log weight)
         self.inv_decay = 0.03       # inventory carrying loss per quarter (spoilage, obsolescence)
         self.phi_K = 2.0            # convex capital adjustment cost (x P K x (dK/K)^2 / 2)
-        self.g_A = 0.10             # firms' forgetting rate on own-demand evidence (level)
+        self.g_A = 0.05             # firms' forgetting rate on own-demand evidence (level)
         self.g_sig = 0.05           # forgetting rate on own forecast errors (noise)
         # bank
         self.m_b = 0.005            # deposit rate = policy - m_b (floor 0)
@@ -78,25 +78,26 @@ class MParams:
         self.fund_cash_q = 0.5      # cash kept for withdrawals, in quarters of withdrawals
         # wage posting (replaces the wage rule)
         self.wage_posting = True    # False = placeholder wage rule (v3 results)
-        self.eta_L = 6.0            # workers' elasticity of job choice to the relative wage (logit)
+        self.eta_L = 3.0            # workers' elasticity of job choice to the relative wage (logit)
         self.ojs = 0.10             # share of employed workers searching on the job each quarter
         self.hiring = "convex"      # vacancy mode: firms choose hires with convex recruiting costs ("convex") or post openings for the whole gap ("gap")
-        self.kappa_h = 12.5         # recruiting cost scale: average cost per hire = kappa_h x T x (hiring rate)^psi_h quarters of a worker's time
+        self.kappa_h = 6.0          # recruiting cost scale: average cost per hire = kappa_h x T x (hiring rate)^psi_h quarters of a worker's time
         self.psi_h = 1.0            # convexity: marginal cost per hire = (1 + psi_h) x average (Blatter et al.: marginal about 2x average)
         self.q_ref = 0.8            # job-filling rate at which tightness adds nothing to recruiting cost
         self.g_pub = 0.25           # forgetting rate on published labor statistics
         self.public_labor = True    # with vacancies: fill and quit beliefs from published labor-market statistics
         self.censored = True        # firms learn demand from sales and sell-outs only (censored demand)
         self.cap_aware = True       # firms price for the output the labor they expect to get can make
+        self.review_p = 3           # quarters between a firm's price reviews (staggered); 1 = every quarter
         self.wage_forecast = True   # firms forecast market pay growth from published inflation and unemployment
         self.g_F = 0.02             # forgetting rate of that forecast (discounted least squares)
         self.review_q = 4           # quarters between a firm's wage reviews (staggered across firms): annual
         self.anchor = 0.0           # weight of the published inflation target in firms' nominal growth beliefs (off)
         self.match_el = 0.5         # elasticity of the contact rate to labor-market tightness (matching function)
-        self.m_match = None         # matching efficiency (e.g. 0.67); None = constant contact rate
-        self.c_max = 0.9            # highest quarterly contact rate (search takes time)
+        self.m_match = 0.67         # matching efficiency; None = constant contact rate
+        self.c_max = 0.6            # highest quarterly contact rate (search takes time)
         self.c_v = 0.5              # recruiting time per vacancy per quarter (efficiency units of the firm's labor)
-        self.vacancies = False      # costly vacancies (experimental, unstable); False = free vacancies
+        self.vacancies = True       # hiring with recruiting costs and matching; False = free vacancies, constant contact
         self.contact = 0.45         # probability an unemployed worker reaches employers in a quarter
         self.amenity_sd = 0.10      # sd of match-specific amenities (log points) in job-to-job moves
         self.g_L = 0.25             # firms' forgetting rate on own applicant and quit evidence
@@ -247,7 +248,14 @@ class Macro:
         S2, mu2, val2 = solve(p2)
         k2 = val2.argmax(1)
         idx = np.arange(F)
-        return p2[idx, k2], S2[idx, k2], mu2[idx, k2], v
+        p_o, S_o, mu_o = p2[idx, k2], S2[idx, k2], mu2[idx, k2]
+        if self.mp.review_p > 1 and getattr(self, "_p_old", None) is not None:
+            # prices are reviewed every review_p quarters (staggered); between reviews the firm keeps its posted
+            # price and chooses only its stock
+            S_f, mu_f, _ = solve(self._p_old[:, None])
+            rv = self._rev_p
+            p_o = np.where(rv, p_o, self._p_old); S_o = np.where(rv, S_o, S_f[:, 0]); mu_o = np.where(rv, mu_o, mu_f[:, 0])
+        return p_o, S_o, mu_o, v
 
     def capital(self, W, rL, s_hat):
         """Next quarter's capital: minimize expected labor cost of producing expected sales plus the user cost
@@ -338,10 +346,17 @@ class Macro:
         L_flow = L_need(mu)
         T = mp.q_ref / np.maximum(q_bel, 1e-3)
         Lb = np.maximum(L_stay, 1.0)
-        mpl = lambda L: (1 - a_) * p * Z * self.K ** a_ * np.maximum(L, 1e-9) ** (-a_)
-        J = lambda L: np.where(L < L_flow, np.maximum(0.0, mpl(L) - w), 0.0) / (r + hp.sep + Q)
+        e_f = mp.eps * (1 - self.share_prev)
+        # marginal revenue product along the firm's own demand belief: selling more output y means a lower price,
+        # p(y) = p (y / mu)^(-1/e), and marginal revenue p(y) (1 - 1/e)
+        def mrp(L):
+            L = np.maximum(L, 1e-9)
+            y = Z * self.K ** a_ * L ** (1 - a_)
+            return p * (y / mu) ** (-1 / e_f) * (1 - 1 / e_f) * (1 - a_) * y / L
+        self._mrp = mrp
+        J = lambda L: np.maximum(0.0, mrp(L) - w) / (r + hp.sep + Q)
         g = lambda H: J(L_stay + H) - w * (1 + mp.psi_h) * mp.kappa_h * T * (H / Lb) ** mp.psi_h
-        lo = np.zeros_like(L_stay); hi = np.maximum(0.0, L_flow - L_stay)
+        lo = np.zeros_like(L_stay); hi = np.maximum(L_stay, 1.0)
         for _ in range(50):
             mid = 0.5 * (lo + hi)
             pos = g(mid) > 0
@@ -513,6 +528,9 @@ class Macro:
         # marginal cost of funds: a borrower pays rL; a firm without loans is financed at the margin by its owner,
         # the fund, which requires the deposit rate plus its published equity premium
         r_own = np.where(self.loan > 0, rL, self.rb_lr + mp.erp)
+        if mp.review_p > 1:
+            self._p_old = self.p.copy()
+            self._rev_p = (np.arange(F) + self.t + 1) % mp.review_p == 0
         if mp.wage_posting:
             # wage posting. Expected going wage = last observed x (1 + believed growth). The firm's labor supply,
             # in its own beliefs: incumbents who stay (quits fall with its relative wage) plus applicants (rise with
@@ -531,7 +549,7 @@ class Macro:
             w0 = np.maximum(self.w, We)
             if mp.vacancies:
                 # market pay growth: last year's, from published pay data
-                g_mkt = (self.Wbar_hist[-1] / self.Wbar_hist[-5]) ** 0.25 - 1
+                g_mkt = self.g_fore if mp.wage_forecast else (self.Wbar_hist[-1] / self.Wbar_hist[-5]) ** 0.25 - 1
                 We = self.Wbar_obs() * (1 + g_mkt)
                 qf = np.exp(self.lnq)
                 if mp.public_labor:                           # beliefs: discounted average of published statistics
@@ -554,8 +572,12 @@ class Macro:
                     x_ = w_post / We
                     stay = L_prev * np.clip(1 - hp.sep - Q * x_ ** (-mp.eta_L), 0, 1)
                     H_want, R_rec, L_flow = self.hires_choice(self.p, mu_s, w_post, stay, r_own, Q, np.minimum(1.0, qf * x_ ** mp.eta_L))
-                    mpl_fac = (1 - a_) * self.p * Z * self.K ** a_
-                    L_keep = np.minimum(L_flow, (mpl_fac / w_post) ** (1 / a_))
+                    # keep a worker while marginal revenue product covers the wage
+                    lo_, hi_ = np.zeros(F), 10 * np.maximum(L_prev, 1.0)
+                    for _ in range(50):
+                        mid_ = 0.5 * (lo_ + hi_); pos_ = self._mrp(mid_) > w_post
+                        lo_ = np.where(pos_, mid_, lo_); hi_ = np.where(pos_, hi_, mid_)
+                    L_keep = 0.5 * (lo_ + hi_)
                     L_tgt = stay + H_want
             else:
                 self.p, S, mu_s, v = self.price_and_stock(w_post, r_own)
@@ -569,7 +591,7 @@ class Macro:
             # prices and stocks for the output that labor can make: a firm short of workers raises its price
             L_plan = L_need(np.maximum(0.0, S - self.inv))
             if mp.vacancies and mp.hiring == "convex":
-                L_exp = stay + H_want - R_rec                 # incumbents who stay + planned hires - recruiting time
+                L_exp = stay + H_want - np.minimum(R_rec, H_want)   # incumbents who stay + new hires' output net of their start-up cost
                 cap = self.inv + Z * self.K ** a_ * np.maximum(L_exp, 0.0) ** (1 - a_)
             elif mp.vacancies:
                 # with posted vacancies the firm knows its workforce: incumbents expected to stay, plus the hires its
@@ -612,7 +634,13 @@ class Macro:
                 obs_f = np.log(np.maximum(self.hired_last, 1e-6) / np.maximum(V, 1e-9)) - mp.eta_L * np.log(w_post / We)
                 self.lnq = np.where(V > 1e-9, (1 - mp.g_L) * self.lnq + mp.g_L * obs_f, self.lnq)
                 Lw = Ld.copy()                                    # workers paid
-                Ld = np.maximum(Ld - (R_rec if mp.hiring == "convex" else mp.c_v * V), 0.0)   # production labor: recruiting takes time
+                if mp.hiring == "convex":                         # recruiting time is spent on the hires actually made
+                    Tq = mp.q_ref / max(self.q_bel, 1e-3)
+                    hr = self.hired_last
+                    R_rec = np.minimum(mp.kappa_h * Tq * hr * (hr / np.maximum(L_prev, 1.0)) ** mp.psi_h, hr)
+                    Ld = np.maximum(Ld - R_rec, 0.0)                 # new hires' start-up cost (adaptation, training)
+                else:
+                    Ld = np.maximum(Ld - mp.c_v * V, 0.0)         # production labor: recruiting takes time
             else:
                 Ld, emp, quits, apps, V, L_prev = self.labor_market(w_post, We, Ld, work)
                 Lw = Ld
