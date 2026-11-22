@@ -66,7 +66,7 @@ class MParams:
         self.phi_G = 0.02           # tax response to debt gap
         self.g_tax = 0.05           # gain on the observed budget share used to set the tax rate
         # central bank
-        self.i_star = 0.0125        # neutral policy rate per quarter (5% a year; this economy needs about that to run at u* and pi*)
+        self.i_star = 0.0075        # neutral policy rate per quarter (3% a year: about 1% real, in line with estimates of r*; the growing economy runs near u* and pi* at it)
         self.pi_star = 0.005        # inflation target per quarter (2% a year)
         self.u_star = 0.05
         self.phi_pi, self.phi_u = 1.5, 0.1
@@ -107,7 +107,7 @@ class MParams:
         self.prod_lag = True        # production takes a quarter: goods made now are sold from next quarter on
         self.review_p = 3           # quarters between a firm's price reviews (staggered); 1 = every quarter
         self.wage_forecast = True   # firms forecast market pay growth from published inflation and unemployment
-        self.g_F = 0.02             # forgetting rate of that forecast (discounted least squares)
+        self.g_F = 0.05             # forgetting rate of that forecast (discounted least squares)
         self.review_q = 4           # quarters between a firm's wage reviews (staggered across firms): annual
         self.anchor = 0.0           # weight of the published inflation target in firms' nominal growth beliefs (off)
         self.match_el = 0.5         # elasticity of the contact rate to labor-market tightness (matching function)
@@ -119,6 +119,31 @@ class MParams:
         self.amenity_sd = 0.10      # sd of match-specific amenities (log points) in job-to-job moves
         self.g_L = 0.25             # firms' forgetting rate on own applicant and quit evidence
         self.g_W = 0.05             # firms' forgetting rate on observed growth of the going wage
+        # technology: each firm uses one technique, a pair of capital and labor productivities (A_K, A_L), in a CES
+        # technology with low substitution (plant-level elasticity about 0.5: Oberfield and Raval 2021). Ideas for new
+        # techniques arrive at random (Jones 2005; Kortum 1997): an idea is a pair (a, b) with independent Pareto tails,
+        # Pr(a > x, b > y) = x^-pK y^-pL, arriving at a rate that grows at g_N (research effort is a primitive). A firm
+        # adopts its best new idea when the cost saving at its own factor prices, over the technique's expected life,
+        # exceeds an adoption cost. No aggregate production function is assumed; in Jones's result the aggregate is
+        # Cobb-Douglas with capital share pK / (pK + pL) and labor-augmenting growth g_N / pL, which the model can test.
+        self.tech = True            # False: Cobb-Douglas K^alpha L^(1-alpha), no technical change
+        self.sigma_f = 0.5          # firm-level elasticity of substitution between capital and labor
+        self.pK, self.pL = 50.0, 70.0  # Pareto tail exponents of ideas (capital, labor); high exponents = many small improvements. With the CES above, techniques chosen along the growth path have a capital cost share of about 0.3
+        self.g_N = 0.35             # growth rate of the arrival rate of ideas per quarter (Jones: labor productivity g_N / pL = 2% a year)
+        self.theta_I = 0.95         # ideas below this share of the frontier's productivities are never useful and are not drawn
+        self.R0 = 31.0              # ideas per quarter above that threshold, at the start (about the stationary value)
+        self.adopt_cost = 0.02      # cost of adopting a technique (workers' time), share of a quarter's revenue
+        self.g_T = 0.02             # forgetting rate on the firm's own record of technique turnover
+        self.g_Y = 0.02             # forgetting rate on published real growth (final sales, labor productivity)
+        self.hurdle = 0.0125        # hurdle premium of firms' investment discount rate over their long-run cost of funds (5% a year)
+        self.tau_min = 0.0          # lowest payroll tax rate (negative = wage subsidy)
+        self.retiree_income = True  # retirees' reference income tracks their own income (pension + drawdown)
+        self.anchor_W = 0.0         # weight of (inflation target + published productivity growth) in firms' pay-growth forecast
+        self.pay_prod = False        # pay forecast uses published productivity growth as a regressor
+        self.bequest = True         # estates go to heirs (the entrant replacing the deceased), not to the government
+        self.r_assumed = 0.0        # > 0: fund values firms at this published assumed return instead of the long-run deposit rate + premium
+        self.market_belief = True   # firms' demand belief = own market position x published market size
+        self.exo_g = 0.0            # diagnostic: exogenous labor-augmenting growth per quarter instead of ideas
         self.burn_hh = 600          # household-only burn-in for the initial distribution
         self.seed = 1
         self.__dict__.update(kw)
@@ -157,7 +182,25 @@ class Macro:
         K0 = kl * L0
         self.K = np.full(F, K0)
         y0 = Z * K0 ** a_ * L0 ** (1 - a_)
-        self.lnA = np.full(F, np.log(y0))        # belief: log demand at relative price 1
+        # technique: CES normalized at the starting point (capital share alpha), so the start is the same economy
+        self.rho = 1 - 1 / mp.sigma_f
+        self.AK = np.full(F, y0 / K0) if mp.tech else None
+        self.AL = np.full(F, y0 / L0) if mp.tech else None
+        self.lnlam0 = np.log(mp.R0) + mp.pK * np.log(mp.theta_I * y0 / K0) + mp.pL * np.log(mp.theta_I * y0 / L0)
+        self.poolK = np.array([y0 / K0]); self.poolL = np.array([y0 / L0])   # stock of known ideas (useful part)
+        self.n_ideas = 0
+        self.r_lr_f = np.full(F, mp.i_star + 0.005)   # firm's long-run cost of funds (discounted average of its own)
+        self.turn = np.full(F, 0.05)             # belief: rate at which the firm's technique is superseded (own record)
+        self.gY = mp.g_N / mp.pL if mp.tech else 0.0   # published real growth of final sales (discounted average)
+        self.Y_prev = None
+        self.adopt_last = 0.0
+        self.lnA = np.full(F, np.log(y0))        # belief: log demand at relative price 1 (= share belief x expected market)
+        # demand belief in two parts: the firm's own position in its market (learned from its own orders) and the size of
+        # the market (published final sales, extrapolated at their published growth). The position is stationary even
+        # when the economy grows.
+        self.ln_a = np.full(F, np.log(1.0 / F))  # belief: log of demand at relative price 1 per unit of real final sales
+        self.S_last = P0 * F * y0                 # last published nominal final sales
+        self.gS = mp.pi_star + (mp.g_N / mp.pL if mp.tech else 0.0)   # published growth of nominal final sales (discounted average)
         self.sig2 = np.full(F, mp.taste_sd ** 2)  # belief: variance of log demand surprises
         self.inv = np.full(F, (1.1 if mp.prod_lag else 0.1) * y0)
         self.loan = np.zeros(F) if mp.fund else np.full(F, P0 * K0)   # with the fund, firms start equity-financed
@@ -175,9 +218,19 @@ class Macro:
         self.w = np.full(F, self.W)
         self.gW_e = mp.pi_star
         # pay-growth forecast: prior that market pay follows price inflation one for one
-        self.thW = np.array([0.0, 1.0, 0.0])
-        self.RW = np.diag([1.0, 1e-4, 1e-3])
-        self.xW = np.array([1.0, mp.pi_star, mp.u_star]); self.g_fore = mp.pi_star
+        # pay-growth forecast on published inflation, unemployment and labor productivity growth; prior: pay follows
+        # prices and productivity one for one
+        g0 = mp.g_N / mp.pL if mp.tech else 0.0               # the economy starts as if it had been growing at trend
+        self.gProd = g0                                       # published labor productivity growth (discounted average)
+        if mp.pay_prod:
+            self.thW = np.array([0.0, 1.0, 0.0, 1.0])
+            self.RW = np.diag([1.0, 1e-4, 1e-3, 1e-4])
+            self.xW = np.array([1.0, mp.pi_star, mp.u_star, g0])
+        else:                                                 # intercept absorbs trend productivity growth
+            self.thW = np.array([g0, 1.0, 0.0])
+            self.RW = np.diag([1.0, 1e-4, 1e-3])
+            self.xW = np.array([1.0, mp.pi_star, mp.u_star])
+        self.g_fore = mp.pi_star + g0
         self.theta = 1.0                          # last quarter's vacancies per unemployed worker
         self.q_mkt, self.Q_mkt = 0.8, 0.02        # published job-filling and quit rates
         self.q_bel, self.Q_bel = 0.8, 0.02        # firms' beliefs: discounted averages of the published rates
@@ -195,7 +248,7 @@ class Macro:
             rb0 = max(0.0, mp.i_star - mp.m_b)
             E0 = P0 * y0 - self.W * L0 - mp.delta * P0 * K0
             self.Ehat = np.full(F, E0)
-            nav0 = F * max(E0, 0) / (rb0 + mp.erp) + self.E_B
+            nav0 = F * max(E0, 0) / (mp.r_assumed if mp.r_assumed else rb0 + mp.erp) + self.E_B
             self.a *= nav0 / self.a.sum()
         else:
             self.Ehat = np.zeros(F)
@@ -217,9 +270,107 @@ class Macro:
         self.t = 0
         self.R0 = self.reserves()
 
-    def unit_cost(self, W, cK):
-        a_ = self.mp.alpha
-        return (W / (1 - a_)) ** (1 - a_) * (cK / a_) ** a_ / self.mp.Z
+    def unit_cost(self, W, cK, AK=None, AL=None):
+        """Cost of a unit of output at wage W and capital rental cK with the firm's technique (CES dual)."""
+        mp = self.mp; a_ = mp.alpha
+        if not mp.tech or getattr(self, "AK", None) is None:
+            return (W / (1 - a_)) ** (1 - a_) * (cK / a_) ** a_ / mp.Z
+        AK = self.AK if AK is None else AK; AL = self.AL if AL is None else AL
+        s = mp.sigma_f
+        return (a_ ** s * (cK / AK) ** (1 - s) + (1 - a_) ** s * (W / AL) ** (1 - s)) ** (1 / (1 - s))
+
+    # ---------------------------------------------------------------- the firm's technology
+    def _tk(self, nd, K=None):
+        sh = (-1,) + (1,) * (nd - 1)
+        K = self.K if K is None else K
+        if not self.mp.tech:
+            return K.reshape(sh), None
+        return (self.AK * K).reshape(sh), self.AL.reshape(sh)
+
+    def prod(self, L, K=None):
+        """Output from labor L (and capital K) with the firm's technique."""
+        L = np.asarray(L, float); mp = self.mp
+        ek, AL = self._tk(L.ndim, K)
+        if not mp.tech:
+            return mp.Z * ek ** mp.alpha * np.maximum(L, 0) ** (1 - mp.alpha)
+        om, r = mp.alpha, self.rho
+        return (om * ek ** r + (1 - om) * (AL * np.maximum(L, 1e-12)) ** r) ** (1 / r)
+
+    def L_need(self, y, K=None):
+        """Labor needed to make y. With low substitution capital limits capacity; output is capped below it."""
+        y = np.asarray(y, float); mp = self.mp
+        ek, AL = self._tk(y.ndim, K)
+        if not mp.tech:
+            return (np.maximum(y, 0) / (mp.Z * ek ** mp.alpha)) ** (1 / (1 - mp.alpha))
+        om, r = mp.alpha, self.rho
+        ycap = 0.98 * om ** (1 / r) * ek
+        yy = np.clip(y, 1e-12, ycap)
+        L = ((yy ** r - om * ek ** r) / (1 - om)) ** (1 / r) / AL
+        return np.where(y <= 1e-12, 0.0, L)
+
+    def mc_y(self, W, y, K=None):
+        """Marginal labor cost of output, W / MPL at the labor that makes y (steeply rising beyond capacity)."""
+        y = np.asarray(y, float); mp = self.mp
+        ek, AL = self._tk(y.ndim, K)
+        if not mp.tech:
+            return W / (1 - mp.alpha) * np.maximum(y, 0) ** (mp.alpha / (1 - mp.alpha)) / (mp.Z * ek ** mp.alpha) ** (1 / (1 - mp.alpha))
+        om, r = mp.alpha, self.rho
+        ycap = 0.98 * om ** (1 / r) * ek
+        yy = np.clip(y, 1e-12, ycap)
+        L = np.maximum(((yy ** r - om * ek ** r) / (1 - om)) ** (1 / r) / AL, 1e-12)
+        mpl = (1 - om) * AL ** r * L ** (r - 1) * yy ** (1 - r)
+        return W / mpl * np.exp(np.minimum(20 * np.maximum(y / ycap - 1, 0), 30.0))
+
+    def mpl(self, L, K=None):
+        L = np.maximum(np.asarray(L, float), 1e-12); mp = self.mp
+        y = self.prod(L, K)
+        if not mp.tech:
+            return (1 - mp.alpha) * y / L
+        ek, AL = self._tk(L.ndim, K)
+        return (1 - mp.alpha) * AL ** self.rho * L ** (self.rho - 1) * y ** (1 - self.rho)
+
+    def mpk_over_mpl(self, K, L):
+        mp = self.mp
+        if not mp.tech:
+            return mp.alpha / (1 - mp.alpha) * L / K
+        r = self.rho
+        return mp.alpha / (1 - mp.alpha) * (self.AK / self.AL) ** r * (K / np.maximum(L, 1e-12)) ** (r - 1)
+
+    def adopt(self, w, uK, p, r_own, W_agg, uK_agg):
+        """Ideas and technique choice. Ideas are public (Jones 2005): new ideas, pairs (a, b) drawn from the Pareto idea
+        distribution, arrive at a rate that grows at g_N and join the stock of known ideas. Each firm evaluates the
+        stock at its own factor prices and adopts the cheapest technique if the unit-cost saving, valued over the
+        technique's expected life (its cost of funds plus the rate at which it has seen its techniques superseded),
+        exceeds the adoption cost:   (c_old - c_new) yhat / (r + turnover) > adopt_cost x p yhat."""
+        mp, rng, F = self.mp, self.rng, self.mp.F
+        th = mp.theta_I
+        # new ideas near the current frontier (ideas far below it are never used, so they are not drawn)
+        cA = self.unit_cost(W_agg, uK_agg, self.poolK, self.poolL)
+        j = int(cA.argmin()); aR, bR = self.poolK[j], self.poolL[j]
+        lnR = self.lnlam0 + mp.g_N * self.t - mp.pK * np.log(th * aR) - mp.pL * np.log(th * bR)
+        n = int(min(rng.poisson(min(np.exp(lnR), 500.0)), 500))
+        if n > 0:
+            a = th * aR * rng.random(n) ** (-1 / mp.pK); b = th * bR * rng.random(n) ** (-1 / mp.pL)
+            self.poolK = np.concatenate([self.poolK, a]); self.poolL = np.concatenate([self.poolL, b])
+            cA = self.unit_cost(W_agg, uK_agg, self.poolK, self.poolL)
+            cA = np.where(np.isfinite(cA), cA, np.inf)
+            keep = cA <= 1.10 * cA.min()
+            keep[int(cA.argmin())] = True                      # ideas far from useful at any nearby factor prices are dropped
+            if keep.sum() > 300:
+                keep = cA <= np.sort(cA)[299]
+            self.poolK, self.poolL = self.poolK[keep], self.poolL[keep]
+        self.n_ideas = n
+        wv = np.asarray(w, float)[:, None]; uv = np.asarray(uK, float)[:, None] if np.ndim(uK) else uK
+        c = self.unit_cost(wv, uv, self.poolK[None, :], self.poolL[None, :])
+        k = c.argmin(1); idx = np.arange(F)
+        c_new = c[idx, k]
+        c_old = self.unit_cost(w, uK)
+        go = (c_old - c_new) / (r_own + self.turn) > mp.adopt_cost * p
+        self.AK = np.where(go, self.poolK[k], self.AK); self.AL = np.where(go, self.poolL[k], self.AL)
+        self.turn = (1 - mp.g_T) * self.turn + mp.g_T * go
+        self.adopt_last = float(go.mean())
+        # the adoption cost is the time of the firm's own workers (installation, retraining) this quarter
+        self._adopt_L = np.where(go, mp.adopt_cost * p * np.exp(self.lnA) / w, 0.0)
 
     # ------------------------------------------------------------------ firm problems
     def price_and_stock(self, W, rL, S_cap=None, W_int=None):
@@ -234,20 +385,19 @@ class Macro:
         e_f = self.elast(short=True)                          # own-price elasticity buyers' choices imply (this quarter)
         sig = np.sqrt(self.sig2)
         uc = self.unit_cost(W, Pref * (rL + mp.delta))       # rL here is the firm's own marginal cost of funds (array)
-        kfac = (Z * self.K ** a_) ** (1 / (1 - a_))
         if mp.v_marginal:
             # a unit left unsold is worth what replacing it next quarter would cost: the marginal cost of producing
             # it at the firm's normal output (expected sales) with the firm's internal cost of labor, net of spoilage,
             # discounted at its cost of funds. The same cost the production decision uses.
             Wi = np.broadcast_to(np.asarray(W if W_int is None else W_int, float), (F,))
             y_n = np.exp(self.lnA)
-            mc_n = Wi / (1 - a_) * y_n ** (a_ / (1 - a_)) / kfac
+            mc_n = self.mc_y(Wi, y_n)
             v = (1 - mp.inv_decay) * mc_n / (1 + rL)
         else:
             v = (1 - mp.inv_decay) * uc / (1 + rL)
         Wc = np.broadcast_to(np.asarray(W, float), (F,))[:, None]   # each firm's own wage
-        C = lambda y: Wc * (np.maximum(y, 0) ** (1 / (1 - a_))) / kfac[:, None]
-        Cp = lambda y: Wc / (1 - a_) * np.maximum(y, 0) ** (a_ / (1 - a_)) / kfac[:, None]
+        C = lambda y: Wc * self.L_need(y)
+        Cp = lambda y: self.mc_y(Wc, y)
         n = self.inv[:, None]
         A = np.exp(self.lnA)[:, None]
         s_ = sig[:, None]
@@ -311,8 +461,8 @@ class Macro:
         mp = self.mp; a_, Z = mp.alpha, mp.Z
         P, K = self.P_ref(), self.K
         uK = P * (rL + mp.delta)
-        L = lambda Kn: (s_hat / (Z * Kn ** a_)) ** (1 / (1 - a_))
-        f = lambda Kn: W * a_ / (1 - a_) * L(Kn) / Kn - uK - mp.phi_K * P * (Kn - K) / K   # decreasing in K'
+        L = lambda Kn: self.L_need(s_hat, Kn)
+        f = lambda Kn: W * self.mpk_over_mpl(Kn, L(Kn)) - uK - mp.phi_K * P * (Kn - K) / K   # decreasing in K'
         lo, hi = (1 - mp.delta) * K, 3 * K
         for _ in range(60):
             mid = 0.5 * (lo + hi)
@@ -331,9 +481,8 @@ class Macro:
         xg = floor_x[:, None] * (1 + np.linspace(0.0, 0.25, 51))[None, :]
         w = xg * We
         E = B[:, None] * xg ** eta / (hp.sep + Q[:, None] * xg ** (-eta))
-        kfac = (Z * self.K ** a_) ** (1 / (1 - a_))
         n = self.inv[:, None]; s_ = np.sqrt(self.sig2)[:, None]; P_ = p[:, None]; M = mu[:, None]; v_ = v[:, None]
-        Cp = lambda y: w / (1 - a_) * np.maximum(y, 0) ** (a_ / (1 - a_)) / kfac[:, None]
+        Cp = lambda y: self.mc_y(w, y)
         lo = n + 0 * w; hi = n + 3 * M * np.exp(4 * s_) + 0 * w
         for _ in range(50):
             S = 0.5 * (lo + hi)
@@ -341,9 +490,9 @@ class Macro:
             g = P_ * pr + v_ * (1 - pr) - Cp(S - n)
             lo = np.where(g > 0, S, lo); hi = np.where(g > 0, hi, S)
         S_u = 0.5 * (lo + hi)
-        L_u = (np.maximum(S_u - n, 0) ** (1 / (1 - a_))) / kfac[:, None]
+        L_u = self.L_need(S_u - n)
         L = np.minimum(L_u, E)
-        S = n + Z * (self.K ** a_)[:, None] * L ** (1 - a_)
+        S = n + self.prod(L)
         d2 = (np.log(M / S) - s_ ** 2 / 2) / s_
         Emin = M - (M * ndtr(d2 + s_) - S * ndtr(d2))
         val = P_ * Emin + v_ * (S - Emin) - w * L
@@ -353,8 +502,7 @@ class Macro:
     def stock_target(self, W, p, mu, v, carry, sd):
         """Next quarter's stock: p Pr(D > S) + v Pr(D < S) = marginal cost of producing S - carry this quarter."""
         mp = self.mp; a_, Z = mp.alpha, mp.Z
-        kfac = (Z * self.K ** a_) ** (1 / (1 - a_))
-        Cp = lambda y: W / (1 - a_) * np.maximum(y, 0) ** (a_ / (1 - a_)) / kfac
+        Cp = lambda y: self.mc_y(W, y)
         lo = carry.copy(); hi = carry + 3 * mu * np.exp(4 * sd)
         for _ in range(50):
             S = 0.5 * (lo + hi)
@@ -367,9 +515,8 @@ class Macro:
         """Production labor at which the stocking FOC holds, p Pr(D > S) + v Pr(D < S) = cost x dL/dy, for each
         firm (rows) and each candidate labor cost (columns)."""
         mp = self.mp; a_, Z = mp.alpha, mp.Z
-        kfac = (Z * self.K ** a_) ** (1 / (1 - a_))
         n = self.inv[:, None]; s_ = np.sqrt(self.sig2)[:, None]; P_ = p[:, None]; M = mu[:, None]; v_ = v[:, None]
-        Cp = lambda y: cost / (1 - a_) * np.maximum(y, 0) ** (a_ / (1 - a_)) / kfac[:, None]
+        Cp = lambda y: self.mc_y(cost, y)
         lo = n + 0 * cost; hi = n + 3 * M * np.exp(4 * s_) + 0 * cost
         for _ in range(50):
             S = 0.5 * (lo + hi)
@@ -377,7 +524,7 @@ class Macro:
             g = P_ * pr + v_ * (1 - pr) - Cp(S - n)
             lo = np.where(g > 0, S, lo); hi = np.where(g > 0, hi, S)
         S = 0.5 * (lo + hi)
-        L = (np.maximum(S - n, 0) ** (1 / (1 - a_))) / kfac[:, None]
+        L = self.L_need(S - n)
         d2 = (np.log(M / S) - s_ ** 2 / 2) / s_
         Emin = M - (M * ndtr(d2 + s_) - S * ndtr(d2))
         val = P_ * Emin + v_ * (S - Emin) - cost * L
@@ -402,8 +549,7 @@ class Macro:
             expected sales;  recruiting time  R(H) = kappa T H (H / L)^psi,  T = q_ref / q_bel (published tightness).
         FOC: J(L_stay + H) = w (1 + psi) kappa T (H / L)^psi."""
         mp, hp = self.mp, self.hp; a_, Z = mp.alpha, mp.Z
-        L_need = lambda y: (np.maximum(y, 0) / (Z * self.K ** a_)) ** (1 / (1 - a_))
-        L_flow = L_need(mu)
+        L_flow = self.L_need(mu)
         T = mp.q_ref / np.maximum(q_bel, 1e-3)
         Lb = np.maximum(L_stay, 1.0)
         e_f = self.elast(short=False)                         # long run: hires are valued over their tenure
@@ -411,8 +557,8 @@ class Macro:
         # p(y) = p (y / mu)^(-1/e), and marginal revenue p(y) (1 - 1/e)
         def mrp(L):
             L = np.maximum(L, 1e-9)
-            y = Z * self.K ** a_ * L ** (1 - a_)
-            return p * (y / mu) ** (-1 / e_f) * (1 - 1 / e_f) * (1 - a_) * y / L
+            y = self.prod(L)
+            return p * (y / mu) ** (-1 / e_f) * (1 - 1 / e_f) * self.mpl(L)
         self._mrp = mrp
         J = lambda L: np.maximum(0.0, mrp(L) - w) / (r + hp.sep + Q)
         g = lambda H: J(L_stay + H) - w * (1 + mp.psi_h) * mp.kappa_h * T * (H / Lb) ** mp.psi_h
@@ -528,14 +674,17 @@ class Macro:
             f = job[idx] if cap is not None else None
             return idx, f
         on = np.nonzero(job >= 0)[0]
-        order = on[np.lexsort((k_lay[on], job[on]))]
-        f_o = job[order]
-        cz = np.cumsum(z[order])
-        start = np.searchsorted(f_o, np.arange(F))
-        base = np.where(start > 0, cz[np.maximum(start - 1, 0)], 0.0)
-        cum_in = cz - base[f_o]
-        laid = (cum_in - z[order]) >= L_star[f_o] + 1e-12
-        job[order[laid]] = -1
+        if len(on) == 0:
+            on = np.zeros(0, int)
+        order = on[np.lexsort((k_lay[on], job[on]))] if len(on) else on
+        if len(order):
+            f_o = job[order]
+            cz = np.cumsum(z[order])
+            start = np.searchsorted(f_o, np.arange(F))
+            base = np.where(start > 0, cz[np.maximum(start - 1, 0)], 0.0)
+            cum_in = cz - base[f_o]
+            laid = (cum_in - z[order]) >= L_star[f_o] + 1e-12
+            job[order[laid]] = -1
         L_now = np.bincount(job[job >= 0], z[job >= 0], F)
         if hires is not None:                                         # hires the firm wants; openings implied at the believed fill rate
             V = np.minimum(hires, np.maximum(0.0, L_target - L_now) + 1e-12); vac = V / max(self.q_bel, 0.05)
@@ -631,16 +780,26 @@ class Macro:
         debt = -self.g
         if self.budget_prev is not None:
             spend_net, wb_prev = self.budget_prev
-            sh = spend_net / wb_prev
+            # the rule allows the deficit that keeps debt at its target share of GDP as the economy grows (published
+            # nominal growth of final sales)
+            sh = (spend_net - mp.d_target * GDP_a * self.gS) / wb_prev
             self.tau_s = sh if self.tau_s is None else (1 - mp.g_tax) * self.tau_s + mp.g_tax * sh
-            self.tau = float(np.clip(self.tau_s + mp.phi_G * (debt / GDP_a - mp.d_target), 0.0, 0.7))
+            self.tau = float(np.clip(self.tau_s + mp.phi_G * (debt / GDP_a - mp.d_target), mp.tau_min, 0.7))
         tau = self.tau + tax_shift
 
         # 3. firms post prices and plan
-        L_need = lambda y: (np.maximum(y, 0) / (Z * self.K ** a_)) ** (1 / (1 - a_))
+        L_need = self.L_need
         # marginal cost of funds: a borrower pays rL; a firm without loans is financed at the margin by its owner,
         # the fund, which requires the deposit rate plus its published equity premium
         r_own = np.where(self.loan > 0, rL, self.rb_lr + mp.erp)
+        if mp.market_belief:                                  # expected demand = own position x expected size of the market
+            self.lnA = self.ln_a + np.log(self.S_last * np.exp(self.gS) / self.P_ref())
+        self._adopt_L = np.zeros(F)
+        if mp.tech and mp.exo_g > 0:                          # diagnostic: smooth exogenous labor-augmenting growth
+            self.AL = self.AL * np.exp(mp.exo_g); self.poolL = self.poolL * np.exp(mp.exo_g)
+        elif mp.tech:                                         # technique choice at last quarter's own wage and price
+            self.adopt(self.w if mp.wage_posting else np.full(F, W), self.P_ref() * (r_own + mp.delta), self.p, r_own,
+                       W, self.P_ref() * (float(np.mean(r_own)) + mp.delta))
         if mp.review_p > 1 or mp.menu_cost > 0:
             self._p_old = self.p.copy()
             self._rev_p = (np.arange(F) + self.t + 1) % mp.review_p == 0
@@ -652,8 +811,9 @@ class Macro:
             if mp.wage_forecast:
                 # expected market pay growth: forecast from published data (last year's inflation, unemployment) by
                 # discounted least squares on the published pay series
-                self.xW = np.array([1.0, np.mean(self.pi_hist[-4:]), self.u_prev])
-                self.g_fore = float(self.xW @ self.thW)
+                self.xW = np.array([1.0, np.mean(self.pi_hist[-4:]), self.u_prev] + ([self.gProd] if mp.pay_prod else []))
+                # partly anchored on the published inflation target plus published productivity growth (anchor weight)
+                self.g_fore = mp.anchor_W * (mp.pi_star + self.gProd) + (1 - mp.anchor_W) * float(self.xW @ self.thW)
                 We = self.Wbar_obs() * (1 + self.g_fore)
             else:
                 We = self.Wbar_obs() * (1 + self.anchored(self.gW_e))
@@ -694,7 +854,7 @@ class Macro:
                     L_tgt = stay + H_want
             else:
                 self.p, S, mu_s, v = self.price_and_stock(w_post, r_own)
-                S = np.minimum(S, self.inv + Z * self.K ** a_ * L_cap ** (1 - a_))
+                S = np.minimum(S, self.inv + self.prod(L_cap))
             W_firm = w_post
         else:
             W_firm = W
@@ -706,7 +866,7 @@ class Macro:
             if mp.vacancies and mp.hiring == "convex":
                 Hx = H_want * self.hfill                      # hires it expects to actually get (own record)
                 L_exp = stay + Hx - np.minimum(R_rec * self.hfill, Hx)   # incumbents who stay + new hires net of start-up cost
-                cap = self.inv + Z * self.K ** a_ * np.maximum(L_exp, 0.0) ** (1 - a_)
+                cap = self.inv + self.prod(np.maximum(L_exp, 0.0))
             elif mp.vacancies:
                 # with posted vacancies the firm knows its workforce: incumbents expected to stay, plus the hires its
                 # open positions are expected to bring at the published filling rate, minus time spent recruiting
@@ -716,9 +876,9 @@ class Macro:
                 tgt0 = np.minimum(L_need(mu_s), (mpl0 / omega) ** (1 / a_))
                 V0 = np.maximum(0.0, tgt0 - stay)
                 L_exp = stay + np.minimum(1.0, qf * x_ ** mp.eta_L) * V0 - mp.c_v * V0
-                cap = self.inv + Z * self.K ** a_ * np.maximum(L_exp, 0.0) ** (1 - a_)
+                cap = self.inv + self.prod(np.maximum(L_exp, 0.0))
             else:
-                cap = self.inv + Z * self.K ** a_ * (np.exp(self.lnphi) * L_plan) ** (1 - a_)
+                cap = self.inv + self.prod(np.exp(self.lnphi) * L_plan)
             self.L_plan_raw = L_plan
             self._cap, self._Spre = cap, S.copy()
             p_unc, mu_unc = self.p.copy(), mu_s.copy()           # the plan the firm would choose with the workers it wants
@@ -760,14 +920,18 @@ class Macro:
                 # expected tenure
                 S_next = self.stock_target(om_e, self.p, mu_s, v, carry, sd * np.sqrt(2))
                 y_plan = np.maximum(0.0, S_next - carry)
-                y_plan = np.minimum(y_plan, Z * self.K ** a_ * np.maximum(L_exp, 0.0) ** (1 - a_))
+                y_plan = np.minimum(y_plan, self.prod(np.maximum(L_exp, 0.0)))
             else:
                 S_next = self.stock_target(W_firm, self.p, mu_s, v, carry, sd * np.sqrt(2))
                 y_plan = np.maximum(0.0, S_next - carry)
         P = float(self.p @ self.share_prev)                   # posted price index (last quarter's shares)
         if not mp.prod_lag:
             y_plan = np.maximum(0.0, S - self.inv)
-        K_next = self.capital(om_e if (mp.prod_lag and mp.v_marginal and mp.k_full) else W_firm, r_own, mu_s)   # same internal cost of labor
+        # capital is evaluated at the firm's discount rate for investment: its long-run cost of funds (discounted average
+        # of its own) plus a hurdle premium. Firms' discount rates are high and move little with interest rates
+        # (Gormsen and Huber 2023; Sharpe and Suarez 2021)
+        self.r_lr_f = (1 - mp.g_lr) * self.r_lr_f + mp.g_lr * r_own
+        K_next = self.capital(om_e if (mp.prod_lag and mp.v_marginal and mp.k_full) else W_firm, self.r_lr_f + mp.hurdle, mu_s)
         I_plan = np.maximum(0.0, K_next - (1 - mp.delta) * self.K)
         Ld = L_need(y_plan)
         Ld_pre = Ld.sum()
@@ -826,13 +990,14 @@ class Macro:
             L_emp = emp @ self.z
             Ld = Ld * L_emp / max(Ld.sum(), 1e-12)
         if mp.wage_posting and mp.vacancies:
+            Ld = np.maximum(Ld - self._adopt_L, 0.0)          # time spent installing a new technique
             Ld = np.minimum(Ld, L_need(y_plan))               # production follows the plan; surplus workers idle
-        y = Z * self.K ** a_ * Ld ** (1 - a_)
+        y = self.prod(Ld)
         if getattr(self, "trace_on", False) and mp.vacancies:
             f = 0
             self.trace.append(dict(t=self.t, inv0=float(self.inv[f]), mu=float(mu_s[f]), S=float(S[f]), y_plan=float(y_plan[f]),
                                    L_flow=float(L_flow[f]), L_keep=float(L_keep[f]), L_tgt=float(L_tgt[f]), workers=float(Lw[f]),
-                                   V=float(V[f]), Lprod=float(Ld[f]), y=float(Z * self.K[f] ** a_ * Ld[f] ** (1 - a_)),
+                                   V=float(V[f]), Lprod=float(Ld[f]), y=float(self.prod(Ld)[f]),
                                    p=float(self.p[f]), w=float(w_post[f]), omega=float(omega[f]), q_mkt=self.q_mkt,
                                    u=1 - L_emp / Lforce.sum(), phi=float(np.exp(self.lnphi[f])), cap=float(self._cap[f]), Spre=float(self._Spre[f])))
         if mp.wage_posting and mp.cap_aware:                   # belief: share of planned labor the firm actually gets
@@ -964,7 +1129,7 @@ class Macro:
         self.E_B -= div_B
         # fund values each firm at trailing earnings capitalized at its assumed return: the long-run deposit rate
         # it has observed (discounted average of its own experience) plus its published equity premium
-        r_f = self.rb_lr + mp.erp
+        r_f = mp.r_assumed if mp.r_assumed else self.rb_lr + mp.erp
         V = np.maximum(self.Ehat, 0.0) / r_f
         if mp.fund:
             # fund collects dividends, keeps cash for withdrawals, invests the rest in its firms (or raises cash
@@ -989,15 +1154,33 @@ class Macro:
         # aging, pensions, estates (to the government)
         retiring = self.age == hp.J_W - 1
         self.pens = np.where(retiring, hp.pension * self.yhat / W, self.pens)
-        self.yhat = np.where(work, (1 - hp.g) * self.yhat + hp.g * y_h, self.yhat)
+        if mp.retiree_income:
+            # reference income is a discounted average of the household's own income, for retirees including what they
+            # draw from their retirement account
+            self.yhat = (1 - hp.g) * self.yhat + hp.g * (y_h + np.where(work, 0.0, -da))
+        else:
+            self.yhat = np.where(work, (1 - hp.g) * self.yhat + hp.g * y_h, self.yhat)
         self.age = self.age + 1
         dead = self.age >= hp.J
-        estate = self.b[dead].sum() + self.a[dead].sum() + self.div_pending[dead].sum()
-        self.g += estate
-        if mp.fund:
-            self.Fc -= self.a[dead].sum()                     # fund pays out estates' balances
-        self.div_pending[dead] = 0.0
-        self.age[dead] = 0; self.b[dead] = 0; self.a[dead] = 0; self.emp[dead] = True
+        if mp.bequest:
+            # estates go to heirs: the entrant who replaces the deceased inherits the estate into a retirement account
+            # (an inherited account stays with the fund; the bank balance is rolled into it), so it is spent through
+            # lower contributions and in retirement
+            estate = 0.0
+            inh = self.b[dead] + self.div_pending[dead]
+            self.a[dead] += inh
+            if mp.fund:
+                self.Fc += inh.sum()
+            else:
+                pass
+            self.b[dead] = 0.0; self.div_pending[dead] = 0.0
+        else:
+            estate = self.b[dead].sum() + self.a[dead].sum() + self.div_pending[dead].sum()
+            self.g += estate
+            if mp.fund:
+                self.Fc -= self.a[dead].sum()                 # fund pays out estates' balances
+            self.div_pending[dead] = 0.0; self.b[dead] = 0; self.a[dead] = 0
+        self.age[dead] = 0; self.emp[dead] = True
         self.kappa[dead] = hp.kappa0; self.pens[dead] = 0
         self.emp = emp | (self.age >= hp.J_W) | dead
         self.job[(self.age >= hp.J_W) | dead] = -1                # retirees leave their firm; entrants start unemployed
@@ -1023,11 +1206,24 @@ class Macro:
             obs = np.where(out, pred + sd * mills, np.log(np.maximum(sold, 1e-12)))
             err = obs - pred
             self.lnA += mp.g_A * err
+            self.ln_a += mp.g_A * (obs + e_f * np.log(self.p / self.Pref_used) - np.log(S_tot / self.Pref_used) - self.ln_a)
             self.sig2 = np.where(out, self.sig2, np.maximum((1 - mp.g_sig) * self.sig2 + mp.g_sig * err ** 2, 1e-4))
         else:
             err = np.log(np.maximum(q_dem, 1e-12)) + e_f * np.log(self.p / self.Pref_used) - self.lnA
             self.lnA += mp.g_A * err
+            # own position: the part of the surprise not explained by the size of the market (published afterwards)
+            err_a = np.log(np.maximum(q_dem, 1e-12)) + e_f * np.log(self.p / self.Pref_used) - np.log(S_tot / self.Pref_used) - self.ln_a
+            self.ln_a += mp.g_A * err_a
             self.sig2 = np.maximum((1 - mp.g_sig) * self.sig2 + mp.g_sig * err ** 2, 1e-4)
+        # published real growth of final sales (a national-accounts statistic); firms expect their own demand to grow
+        # with it, so the level belief carries a trend (discounted least squares on a level plus a published trend)
+        Y_real = sold.sum()
+        if self.Y_prev is not None:
+            self.gY = (1 - mp.g_Y) * self.gY + mp.g_Y * np.log(Y_real / self.Y_prev)
+            self.gProd = (1 - mp.g_Y) * self.gProd + mp.g_Y * np.log(Y_real / L_emp / (self.Y_prev / self.L_prev_emp))
+        self.Y_prev, self.L_prev_emp = Y_real, L_emp
+        self.gS = (1 - mp.g_Y) * self.gS + mp.g_Y * np.log(S_tot / self.S_last)
+        self.S_last = S_tot
         pi = P_paid / self.P_prev - 1
         self.pi_hist.append(pi)
         self.pi_e = (1 - mp.g_pi) * self.pi_e + mp.g_pi * pi
@@ -1043,10 +1239,14 @@ class Macro:
                 xw, yw, gF = self.xW, W_obs / W - 1, mp.g_F
                 self.RW = self.RW + gF * (np.outer(xw, xw) - self.RW)
                 self.thW = self.thW + gF * np.linalg.solve(self.RW, xw) * (yw - xw @ self.thW)
+                # projection facility (Evans and Honkapohja): estimates that would make pay respond more than one for
+                # one to inflation, or rise with unemployment, are not used
+                self.thW[1] = np.clip(self.thW[1], 0.0, 1.0); self.thW[2] = min(self.thW[2], 0.0)
             self.W = W_obs
         else:
             self.W = W * (1 + mp.pi_star) if mp.fix_wage else max(W_new, mp.lam_W * W)
-        self.yhat = np.where(self.age >= hp.J_W, self.yhat * self.W / W, self.yhat)   # retirees: wage-indexed
+        if not mp.retiree_income:
+            self.yhat = np.where(self.age >= hp.J_W, self.yhat * self.W / W, self.yhat)   # retirees: wage-indexed
         self.yhat[dead] = self.W * self.z[dead]
         uc_rec = float(np.mean(self.unit_cost(W, self.P_prev * (r_own + mp.delta))))
         self.P_prev = P_paid
@@ -1064,4 +1264,6 @@ class Macro:
                     withdraw=-da[da < 0].sum(), kappa_mean=float(self.kappa[work].mean()),
                     markup=float(np.mean(self.p)) / uc_rec,
                     inv_sales=self.inv.sum() / max(sold.sum(), 1e-12), sig=float(np.sqrt(self.sig2).mean()),
-                    V=V.sum(), Fc=self.Fc, book=float((P * self.K + v * self.inv + self.m - self.loan).sum()))
+                    V=V.sum(), Fc=self.Fc, adopt=self.adopt_last, gY=self.gY, n_ideas=self.n_ideas, pool=len(self.poolK) if mp.tech else 0,
+                    AK=float(np.exp(np.mean(np.log(self.AK)))) if mp.tech else 1.0, AL=float(np.exp(np.mean(np.log(self.AL)))) if mp.tech else 1.0,
+                    Lprod=float(Ld.sum()), Kuse=float(self.K.sum()), book=float((P * self.K + v * self.inv + self.m - self.loan).sum()))
