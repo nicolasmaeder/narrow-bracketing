@@ -80,6 +80,7 @@ class MParams:
         self.wage_posting = True    # False = placeholder wage rule (v3 results)
         self.eta_L = 6.0            # workers' elasticity of job choice to the relative wage (logit)
         self.ojs = 0.10             # share of employed workers searching on the job each quarter
+        self.g_pub = 0.25           # forgetting rate on published labor statistics
         self.public_labor = True    # with vacancies: fill and quit beliefs from published labor-market statistics
         self.censored = True        # firms learn demand from sales and sell-outs only (censored demand)
         self.cap_aware = True       # firms price for the output the labor they expect to get can make
@@ -149,6 +150,7 @@ class Macro:
         self.gW_e = mp.pi_star
         self.theta = 1.0                          # last quarter's vacancies per unemployed worker
         self.q_mkt, self.Q_mkt = 0.8, 0.02        # published job-filling and quit rates
+        self.q_bel, self.Q_bel = 0.8, 0.02        # firms' beliefs: discounted averages of the published rates
         self.lnphi = np.zeros(F)                  # belief: log share of planned labor actually obtained
         self.lnq = np.full(F, np.log(0.7))        # belief: hires per vacancy (fill rate) at relative pay 1
         self.Wbar_hist = [self.W] * 5
@@ -427,6 +429,9 @@ class Macro:
         # published statistics: job-filling rate (hires per vacancy) and quit rate
         self.q_mkt = min(1.0, hired.sum() / vac.sum()) if vac.sum() > 1e-9 else 1.0
         self.Q_mkt = max(quits.sum() / max(L_prev.sum(), 1e-9), 1e-4)
+        g = self.mp.g_pub
+        self.q_bel = (1 - g) * self.q_bel + g * self.q_mkt
+        self.Q_bel = (1 - g) * self.Q_bel + g * self.Q_mkt
         self.hired_last = hired
         self.vac_last = vac.sum()
         return L_f, emp, quits, apps, vac, L_prev
@@ -484,8 +489,8 @@ class Macro:
                 g_mkt = (self.Wbar_hist[-1] / self.Wbar_hist[-5]) ** 0.25 - 1
                 We = self.Wbar_obs() * (1 + g_mkt)
                 qf = np.exp(self.lnq)
-                if mp.public_labor:                           # beliefs from published labor-market statistics
-                    qf = np.full(F, self.q_mkt); Q = np.full(F, self.Q_mkt)
+                if mp.public_labor:                           # beliefs: discounted average of published statistics
+                    qf = np.full(F, self.q_bel); Q = np.full(F, self.Q_bel)
                 w_post = np.maximum(self.w, self.pay_review(We * (1 + g_mkt) ** 1.5, qf, Q, r_own))   # no nominal cuts
             else:
                 p0, S0, mu0, v0 = self.price_and_stock(w0, r_own)
@@ -511,9 +516,30 @@ class Macro:
             # the firm expects to get only a share of the labor it plans for (belief from its own record), so it
             # prices and stocks for the output that labor can make: a firm short of workers raises its price
             L_plan = L_need(np.maximum(0.0, S - self.inv))
-            cap = self.inv + Z * self.K ** a_ * (np.exp(self.lnphi) * L_plan) ** (1 - a_)
+            if mp.vacancies:
+                # with posted vacancies the firm knows its workforce: incumbents expected to stay, plus the hires its
+                # open positions are expected to bring at the published filling rate, minus time spent recruiting
+                x_ = w_post / We
+                stay = L_prev * np.clip(1 - hp.sep - Q * x_ ** (-mp.eta_L), 0, 1)
+                mpl0 = (1 - a_) * self.p * Z * self.K ** a_
+                tgt0 = np.minimum(L_need(mu_s), (mpl0 / omega) ** (1 / a_))
+                V0 = np.maximum(0.0, tgt0 - stay)
+                L_exp = stay + np.minimum(1.0, qf * x_ ** mp.eta_L) * V0 - mp.c_v * V0
+                cap = self.inv + Z * self.K ** a_ * np.maximum(L_exp, 0.0) ** (1 - a_)
+            else:
+                cap = self.inv + Z * self.K ** a_ * (np.exp(self.lnphi) * L_plan) ** (1 - a_)
             self.L_plan_raw = L_plan
+            self._cap, self._Spre = cap, S.copy()
+            p_unc, mu_unc = self.p.copy(), mu_s.copy()           # the plan the firm would choose with the workers it wants
             self.p, S, mu_s, v = self.price_and_stock(W_firm, r_own, S_cap=cap)
+        if mp.wage_posting and mp.vacancies:
+            # workforce decisions look at the expected flow of sales, not this quarter's stock: the firm keeps and
+            # hires the workers it needs to make what it expects to sell each quarter, as long as a worker's product
+            # covers the wage (keep) or the wage plus recruiting cost (hire)
+            mpl_fac = (1 - a_) * p_unc * Z * self.K ** a_
+            L_flow = L_need(mu_unc)
+            L_keep = np.minimum(L_flow, (mpl_fac / w_post) ** (1 / a_))
+            L_tgt = np.minimum(L_flow, (mpl_fac / omega) ** (1 / a_))
         P = float(self.p @ self.share_prev)                   # posted price index (last quarter's shares)
         y_plan = np.maximum(0.0, S - self.inv)
         K_next = self.capital(W_firm, r_own, mu_s)
@@ -563,7 +589,16 @@ class Macro:
                 emp[cand[:k]] = True
             L_emp = emp @ self.z
             Ld = Ld * L_emp / max(Ld.sum(), 1e-12)
+        if mp.wage_posting and mp.vacancies:
+            Ld = np.minimum(Ld, L_need(y_plan))               # production follows the plan; surplus workers idle
         y = Z * self.K ** a_ * Ld ** (1 - a_)
+        if getattr(self, "trace_on", False) and mp.vacancies:
+            f = 0
+            self.trace.append(dict(t=self.t, inv0=float(self.inv[f]), mu=float(mu_s[f]), S=float(S[f]), y_plan=float(y_plan[f]),
+                                   L_flow=float(L_flow[f]), L_keep=float(L_keep[f]), L_tgt=float(L_tgt[f]), workers=float(Lw[f]),
+                                   V=float(V[f]), Lprod=float(Ld[f]), y=float(Z * self.K[f] ** a_ * Ld[f] ** (1 - a_)),
+                                   p=float(self.p[f]), w=float(w_post[f]), omega=float(omega[f]), q_mkt=self.q_mkt,
+                                   u=1 - L_emp / Lforce.sum(), phi=float(np.exp(self.lnphi[f])), cap=float(self._cap[f]), Spre=float(self._Spre[f])))
         if mp.wage_posting and mp.cap_aware:                   # belief: share of planned labor the firm actually gets
             obs_phi = np.clip(np.log(np.maximum(Ld, 1e-9) / np.maximum(Ld_req, 1e-9)), -3.0, 0.0)
             self.lnphi = (1 - mp.g_L) * self.lnphi + mp.g_L * obs_phi
@@ -625,6 +660,8 @@ class Macro:
         S_I_f = P * I_plan
         self.K = (1 - mp.delta) * self.K + I_real
         self.inv = (avail - sold) * (1 - mp.inv_decay)
+        if getattr(self, "trace_on", False) and mp.vacancies:
+            self.trace[-1].update(sold=float(sold[0]), dem=float(q_dem[0]), avail=float(avail[0]))
         self.share_prev_used = self.share_prev
         self.share_prev = revenue / max(spent, 1e-12)
 
