@@ -80,6 +80,7 @@ class MParams:
         self.wage_posting = True    # False = placeholder wage rule (v3 results)
         self.eta_L = 6.0            # workers' elasticity of job choice to the relative wage (logit)
         self.ojs = 0.10             # share of employed workers searching on the job each quarter
+        self.public_labor = True    # with vacancies: fill and quit beliefs from published labor-market statistics
         self.censored = True        # firms learn demand from sales and sell-outs only (censored demand)
         self.cap_aware = True       # firms price for the output the labor they expect to get can make
         self.review_q = 4           # quarters between a firm's wage reviews (staggered across firms): annual
@@ -147,6 +148,7 @@ class Macro:
         self.w = np.full(F, self.W)
         self.gW_e = mp.pi_star
         self.theta = 1.0                          # last quarter's vacancies per unemployed worker
+        self.q_mkt, self.Q_mkt = 0.8, 0.02        # published job-filling and quit rates
         self.lnphi = np.zeros(F)                  # belief: log share of planned labor actually obtained
         self.lnq = np.full(F, np.log(0.7))        # belief: hires per vacancy (fill rate) at relative pay 1
         self.Wbar_hist = [self.W] * 5
@@ -376,7 +378,7 @@ class Macro:
         if L_target is None:
             V = np.maximum(0.0, L_star - L_now); vac = V.copy()
         else:                                                         # hires wanted, and vacancies posted for them
-            V = np.maximum(0.0, L_target - L_now); vac = V / np.maximum(q_fill, 0.05)
+            V = np.maximum(0.0, L_target - L_now); vac = V.copy()   # one open position per hire wanted (requisitions)
         U_seek = z[work & (job < 0)].sum()
         quits = np.zeros(F); apps = np.zeros(F); hired = np.zeros(F)
 
@@ -409,7 +411,9 @@ class Macro:
 
         # search technology (matching function): the chance an unemployed worker reaches employers rises with
         # last quarter's vacancies per unemployed worker
-        c_rate = mp.contact if mp.m_match is None else min(mp.c_max, mp.m_match * self.theta ** mp.match_el)
+        # contacts this quarter come from this quarter's vacancies (already posted) and unemployed
+        th_now = vac.sum() / max(U_seek, 1e-9)
+        c_rate = mp.contact if mp.m_match is None else min(mp.c_max, mp.m_match * th_now ** mp.match_el)
         contact = u_ct < c_rate
         self.c_rate_last = c_rate
         seek1 = work & (((job < 0) & contact) | ((job >= 0) & (u_ojs < mp.ojs)))
@@ -420,6 +424,9 @@ class Macro:
         L_f = np.bincount(job[job >= 0], z[job >= 0], F)
         emp = job >= 0
         self.theta = vac.sum() / max(U_seek, 1e-9)                      # vacancies per unemployed (efficiency units)
+        # published statistics: job-filling rate (hires per vacancy) and quit rate
+        self.q_mkt = min(1.0, hired.sum() / vac.sum()) if vac.sum() > 1e-9 else 1.0
+        self.Q_mkt = max(quits.sum() / max(L_prev.sum(), 1e-9), 1e-4)
         self.hired_last = hired
         self.vac_last = vac.sum()
         return L_f, emp, quits, apps, vac, L_prev
@@ -477,6 +484,8 @@ class Macro:
                 g_mkt = (self.Wbar_hist[-1] / self.Wbar_hist[-5]) ** 0.25 - 1
                 We = self.Wbar_obs() * (1 + g_mkt)
                 qf = np.exp(self.lnq)
+                if mp.public_labor:                           # beliefs from published labor-market statistics
+                    qf = np.full(F, self.q_mkt); Q = np.full(F, self.Q_mkt)
                 w_post = np.maximum(self.w, self.pay_review(We * (1 + g_mkt) ** 1.5, qf, Q, r_own))   # no nominal cuts
             else:
                 p0, S0, mu0, v0 = self.price_and_stock(w0, r_own)
