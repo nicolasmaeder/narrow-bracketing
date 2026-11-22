@@ -22,5 +22,8 @@ Code for a macro model that is computed one quarter at a time. Every agent decid
 
 ## Status
 
-- Wage posting (firms post wages, workers choose employers by logit, firms learn applicants and quits) is in `macro.py` behind `wage_posting`, off by default: it is not yet stable. With it off, wages follow a placeholder rule.
-- Still to replace with objectives: wage setting, bank rate margins. Planned: production lags.
+- Wages are posted by firms (`wage_posting=True`). Each firm picks the wage that maximizes the quarter's expected profit, evaluating it by the workforce it sustains under its own beliefs about applicants and quits; it does not cut its own nominal wage (morale); it reviews wages once a year (staggered). Workers choose among hiring firms by logit in the relative wage; on-the-job searchers move if an offer plus a match-specific amenity beats their job.
+- Baseline is stable over 1,000 quarters and across seeds: unemployment ≈ 4.8%, inflation ≈ 2.3%, policy rate ≈ 3.8%, labor share ≈ 0.57.
+- Open problem: with a constant contact rate, unemployment is almost purely frictional, so demand shocks barely move it for two years. A matching function (`m_match`, contact rising with vacancies per unemployed) makes unemployment cyclical but produces a regular boom-bust cycle in which unemployment swings between 0% and 10%.
+- `wage_posting=False` reproduces the earlier placeholder wage rule.
+- Still to replace with objectives: bank rate margins. Planned: production lags.

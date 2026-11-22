@@ -77,11 +77,17 @@ class MParams:
         self.g_earn = 0.25          # forgetting rate on firms' earnings (trailing year)
         self.fund_cash_q = 0.5      # cash kept for withdrawals, in quarters of withdrawals
         # wage posting (replaces the wage rule)
-        self.wage_posting = False   # work in progress; False = placeholder wage rule (v3 results)
+        self.wage_posting = True    # False = placeholder wage rule (v3 results)
         self.eta_L = 6.0            # workers' elasticity of job choice to the relative wage (logit)
         self.ojs = 0.10             # share of employed workers searching on the job each quarter
+        self.review_q = 4           # quarters between a firm's wage reviews (staggered across firms): annual
+        self.anchor = 0.0           # weight of the published inflation target in firms' nominal growth beliefs (off)
+        self.match_el = 0.5         # elasticity of the contact rate to labor-market tightness (matching function)
+        self.m_match = None         # matching efficiency; None = constant contact rate
+        self.contact = 0.45         # probability an unemployed worker reaches employers in a quarter
+        self.amenity_sd = 0.10      # sd of match-specific amenities (log points) in job-to-job moves
         self.g_L = 0.25             # firms' forgetting rate on own applicant and quit evidence
-        self.g_W = 0.25             # firms' forgetting rate on observed growth of the going wage
+        self.g_W = 0.05             # firms' forgetting rate on observed growth of the going wage
         self.burn_hh = 600          # household-only burn-in for the initial distribution
         self.seed = 1
         self.__dict__.update(kw)
@@ -135,7 +141,8 @@ class Macro:
         self.job[ew] = self.rng.integers(0, F, len(ew))
         self.w = np.full(F, self.W)
         self.gW_e = mp.pi_star
-        self.lnapp = np.full(F, np.log(3.0))     # belief: applicants per unit of vacancy at the going wage
+        self.theta = 1.0                          # last quarter's vacancies per unemployed worker
+        self.lnapp = np.full(F, np.log(0.15 * (self.z @ work) / F))   # belief: applicants per quarter at the going wage
         self.lnQ = np.full(F, np.log(0.02))      # belief: quit rate at the going wage
         # ---------------- bank and government: government account is the residual that sets reserves to zero
         self.E_B = mp.cap_B * self.loan.sum()
@@ -178,7 +185,8 @@ class Macro:
         xi lognormal with mean 1. C is the labor cost of producing with current capital; v is the value of a
         unit carried into next quarter (replacement cost net of spoilage, discounted at the loan rate)."""
         mp = self.mp; a_, Z, F = mp.alpha, mp.Z, mp.F
-        Pref = self.P_prev
+        Pref = self.P_ref()
+        self.Pref_used = Pref
         e_f = mp.eps * (1 - self.share_prev)                  # own-price elasticity buyers' choices imply
         sig = np.sqrt(self.sig2)
         uc = self.unit_cost(W, Pref * (rL + mp.delta))       # rL here is the firm's own marginal cost of funds (array)
@@ -222,7 +230,7 @@ class Macro:
         of capital plus a convex adjustment cost, at posted prices (buy at P, resell at (1-delta)P):
             min over K':  W L(s_hat, K') + P (rL + delta) K' + phi P K ((K' - K)/K)^2 / 2,  K' >= (1-delta) K."""
         mp = self.mp; a_, Z = mp.alpha, mp.Z
-        P, K = self.P_prev, self.K
+        P, K = self.P_ref(), self.K
         uK = P * (rL + mp.delta)
         L = lambda Kn: (s_hat / (Z * Kn ** a_)) ** (1 / (1 - a_))
         f = lambda Kn: W * a_ / (1 - a_) * L(Kn) / Kn - uK - mp.phi_K * P * (Kn - K) / K   # decreasing in K'
@@ -233,6 +241,45 @@ class Macro:
             lo = np.where(pos, mid, lo); hi = np.where(pos, hi, mid)
         Kn = 0.5 * (lo + hi)
         return np.where(f((1 - mp.delta) * K) <= 0, (1 - mp.delta) * K, Kn)
+
+    def wage_choice(self, We, p, mu, v, L_prev, B, Q, floor_x):
+        """Each firm's wage problem, given its price and demand belief from the quarter problem. A wage is a policy
+        that persists (the firm does not cut it), so the firm evaluates it by the workforce it sustains under its
+        beliefs, inflow = outflow:  B x^eta = L (sep + Q x^-eta),  i.e.  E(w) = B x^eta / (sep + Q x^-eta),  x = w / We:
+            max over w >= own last wage:  p E[min(D, S)] + v E[(S - D)+] - w L,   S = n + y(L),  L = min(L_u(w), E(w)),
+        where L_u(w) is the labor the stocking FOC asks for at cost w."""
+        mp, hp = self.mp, self.hp; a_, Z, F, eta = mp.alpha, mp.Z, mp.F, mp.eta_L
+        xg = floor_x[:, None] * (1 + np.linspace(0.0, 0.25, 51))[None, :]
+        w = xg * We
+        E = B[:, None] * xg ** eta / (hp.sep + Q[:, None] * xg ** (-eta))
+        kfac = (Z * self.K ** a_) ** (1 / (1 - a_))
+        n = self.inv[:, None]; s_ = np.sqrt(self.sig2)[:, None]; P_ = p[:, None]; M = mu[:, None]; v_ = v[:, None]
+        Cp = lambda y: w / (1 - a_) * np.maximum(y, 0) ** (a_ / (1 - a_)) / kfac[:, None]
+        lo = n + 0 * w; hi = n + 3 * M * np.exp(4 * s_) + 0 * w
+        for _ in range(50):
+            S = 0.5 * (lo + hi)
+            pr = ndtr((np.log(M / S) - s_ ** 2 / 2) / s_)
+            g = P_ * pr + v_ * (1 - pr) - Cp(S - n)
+            lo = np.where(g > 0, S, lo); hi = np.where(g > 0, hi, S)
+        S_u = 0.5 * (lo + hi)
+        L_u = (np.maximum(S_u - n, 0) ** (1 / (1 - a_))) / kfac[:, None]
+        L = np.minimum(L_u, E)
+        S = n + Z * (self.K ** a_)[:, None] * L ** (1 - a_)
+        d2 = (np.log(M / S) - s_ ** 2 / 2) / s_
+        Emin = M - (M * ndtr(d2 + s_) - S * ndtr(d2))
+        val = P_ * Emin + v_ * (S - Emin) - w * L
+        k = val.argmax(1); idx = np.arange(F)
+        return w[idx, k], E[idx, k]
+
+    def anchored(self, g_obs):
+        """Belief about nominal growth: Bayesian with a prior centered on the published inflation target that is
+        never forgotten (weight anchor) and evidence discounted at a constant rate (the EWMA g_obs)."""
+        mp = self.mp
+        return mp.anchor * mp.pi_star + (1 - mp.anchor) * g_obs
+
+    def P_ref(self):
+        """Firms' expected price index this quarter: last observed x (1 + believed inflation)."""
+        return self.P_prev * (1 + self.anchored(self.pi_e)) if self.mp.wage_posting else self.P_prev
 
     # ------------------------------------------------------------------ labor market with posted wages
     def Wbar_obs(self):
@@ -248,7 +295,8 @@ class Macro:
         hp, mp, rng = self.hp, self.mp, self.rng
         N, F, z = hp.N, mp.F, self.z
         job = self.job
-        u_sep, u_ojs, k_lay, u_c1, k_1, u_c2, k_2 = (rng.random(N) for _ in range(7))
+        u_sep, u_ojs, k_lay, u_c1, k_1, u_c2, k_2, u_ct = (rng.random(N) for _ in range(8))
+        zeta = mp.amenity_sd * rng.standard_normal(N)                   # match-specific amenity of the job offered
         job[~work] = -1
         L_prev = np.bincount(job[job >= 0], z[job >= 0], F)
         job[(job >= 0) & (u_sep < hp.sep)] = -1                       # exogenous separations
@@ -271,14 +319,14 @@ class Macro:
         quits = np.zeros(F); apps = np.zeros(F); hired = np.zeros(F)
 
         def round_(seek, u_c, key, V_left, count_apps):
-            wt = V_left * (w / We) ** mp.eta_L
+            wt = (V_left > 1e-9) * (w / We) ** mp.eta_L          # seekers consider the firms that are hiring
             if wt.sum() <= 0 or seek.sum() == 0:
                 return V_left
             cdf = np.cumsum(wt) / wt.sum()
             idx = np.nonzero(seek)[0]
             ch = np.minimum(np.searchsorted(cdf, u_c[idx]), F - 1)
             cur = job[idx]
-            ok = (cur < 0) | (w[ch] > w[np.maximum(cur, 0)])             # on-the-job searchers move only for more pay
+            ok = (cur < 0) | (w[ch] * np.exp(zeta[idx]) > w[np.maximum(cur, 0)])   # on-the-job searchers move if the offer beats their job
             idx, ch, cur = idx[ok], ch[ok], cur[ok]
             if count_apps:
                 apps[:] += np.bincount(ch, z[idx], F)
@@ -295,13 +343,19 @@ class Macro:
             hired[:] += got
             return np.maximum(0.0, V_left - got)
 
-        seek1 = work & ((job < 0) | (u_ojs < mp.ojs))
+        # search technology (matching function): the chance an unemployed worker reaches employers rises with
+        # last quarter's vacancies per unemployed worker
+        c_rate = mp.contact if mp.m_match is None else min(0.95, mp.m_match * self.theta ** mp.match_el)
+        contact = u_ct < c_rate
+        seek1 = work & (((job < 0) & contact) | ((job >= 0) & (u_ojs < mp.ojs)))
         V2 = round_(seek1, u_c1, k_1, V.copy(), True)
         V2 = np.maximum(0.0, V2 + 0.0)
-        seek2 = work & (job < 0)
+        seek2 = work & (job < 0) & contact
         round_(seek2, u_c2, k_2, V2, False)
         L_f = np.bincount(job[job >= 0], z[job >= 0], F)
         emp = job >= 0
+        U = z[work & (job < 0)].sum()
+        self.theta = V.sum() / max(U, 1e-9)                              # vacancies per unemployed (efficiency units)
         return L_f, emp, quits, apps, V, L_prev
 
     # ------------------------------------------------------------------ accounting
@@ -344,18 +398,21 @@ class Macro:
         # the fund, which requires the deposit rate plus its published equity premium
         r_own = np.where(self.loan > 0, rL, self.rb_lr + mp.erp)
         if mp.wage_posting:
-            # wage posting: the firm's labor cost is its own wage. Expected going wage = last observed x (1 + believed
-            # growth). A hiring firm pays the least wage at which its applicants (belief) fill its vacancies; a firm
-            # that is not hiring keeps its wage (cutting it lowers effort of all incumbents: morale, Bewley).
-            We = self.Wbar_obs() * (1 + self.gW_e)
-            app, Q, eta = np.exp(self.lnapp), np.exp(self.lnQ), mp.eta_L
+            # wage posting. Expected going wage = last observed x (1 + believed growth). The firm's labor supply,
+            # in its own beliefs: incumbents who stay (quits fall with its relative wage) plus applicants (rise with
+            # it). It picks the wage, paid to all its workers, that maximizes the quarter's expected profit, and it
+            # does not cut its own nominal wage (a cut lowers the effort of all incumbents: morale, Bewley).
+            We = self.Wbar_obs() * (1 + self.anchored(self.gW_e))
+            B, Q = np.exp(self.lnapp), np.exp(self.lnQ)
             L_prev = np.bincount(self.job[self.job >= 0], self.z[self.job >= 0], F)
-            w_hire = np.maximum(self.w, We * app ** (-1 / eta))
-            self.p, S, mu_s, v = self.price_and_stock(w_hire, r_own)
-            L_star = L_need(np.maximum(0.0, S - self.inv))
-            R = L_prev * np.clip(1 - hp.sep - Q * (w_hire / We) ** (-eta), 0, 1)
-            w_post = np.where(L_star > R, w_hire, self.w)
+            w0 = np.maximum(self.w, We)
+            p0, S0, mu0, v0 = self.price_and_stock(w0, r_own)
+            w_post, L_cap = self.wage_choice(We, p0, mu0, v0, L_prev, B, Q, self.w / We)
+            if mp.review_q > 1:                                 # wages are reviewed once every review_q quarters (staggered)
+                rev = (np.arange(F) + self.t) % mp.review_q == 0
+                w_post = np.where(rev, w_post, self.w)
             self.p, S, mu_s, v = self.price_and_stock(w_post, r_own)
+            S = np.minimum(S, self.inv + Z * self.K ** a_ * L_cap ** (1 - a_))
             W_firm = w_post
         else:
             W_firm = W
@@ -372,10 +429,10 @@ class Macro:
         if mp.wage_posting:
             Ld, emp, quits, apps, V, L_prev = self.labor_market(w_post, We, Ld, work)
             L_emp = emp @ self.z
-            # beliefs from own evidence: applicants per vacancy and quit rate, both at the going wage
+            # beliefs from own evidence: applicants and quit rate, both at the going wage
             x = w_post / We
             hire = V > 1e-9
-            obs_a = np.log(np.maximum(apps, 1e-6) / np.maximum(V, 1e-9) / x ** mp.eta_L)
+            obs_a = np.log(np.maximum(apps, 1e-6) / x ** mp.eta_L)
             self.lnapp = np.where(hire, (1 - mp.g_L) * self.lnapp + mp.g_L * obs_a, self.lnapp)
             obs_q = np.log(np.maximum(quits / np.maximum(L_prev, 1e-9), 1e-4) * x ** mp.eta_L)
             self.lnQ = np.where(L_prev > 0, (1 - mp.g_L) * self.lnQ + mp.g_L * obs_q, self.lnQ)
@@ -549,7 +606,7 @@ class Macro:
         loss_rate = loss.sum() / max((self.loan + loss).sum(), 1e-12)
         self.loss_e = (1 - mp.g_loss) * self.loss_e + mp.g_loss * loss_rate
         e_f = mp.eps * (1 - self.share_prev_used)
-        err = np.log(np.maximum(q_dem, 1e-12)) + e_f * np.log(self.p / self.P_prev) - self.lnA
+        err = np.log(np.maximum(q_dem, 1e-12)) + e_f * np.log(self.p / self.Pref_used) - self.lnA
         self.lnA += mp.g_A * err
         self.sig2 = np.maximum((1 - mp.g_sig) * self.sig2 + mp.g_sig * err ** 2, 1e-4)
         pi = P_paid / self.P_prev - 1
@@ -578,7 +635,7 @@ class Macro:
                     Y=sold.sum(), C=c_real.sum(), I=I_real.sum(), GDP=GDP, fill=fill, inv=self.inv.sum(),
                     K=self.K.sum(), loans=self.loan.sum(), debt=-self.g, E_B=self.E_B, B=self.b.sum(),
                     A=self.a.sum(), M_f=self.m.sum(), defaults=int((loss > 0).sum()), loss_rate=loss_rate,
-                    reserves=self.reserves() - self.R0, y=y.sum(), Ld_pre=Ld_pre, div=div_f.sum() + div_B, profit_share=(div_f.sum()) / max(GDP, 1e-12),
+                    reserves=self.reserves() - self.R0, theta=self.theta, y=y.sum(), Ld_pre=Ld_pre, div=div_f.sum() + div_B, profit_share=(div_f.sum()) / max(GDP, 1e-12),
                     wage_share=wb_f.sum() / max(GDP, 1e-12), wage_disp=float(np.std(np.log(W_firm * np.ones(F)))), spend_h=S_h.sum() * fill, contrib=da[da > 0].sum(),
                     withdraw=-da[da < 0].sum(), kappa_mean=float(self.kappa[work].mean()),
                     markup=float(np.mean(self.p)) / uc_rec,
