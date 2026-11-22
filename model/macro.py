@@ -57,7 +57,7 @@ class MParams:
         self.c_tr = 0.001           # cost of a transfer between savings and checking, share of quarterly income (Baumol-Tobin)
         self.bank_objective = True
         self.NB = 5
-        self.a_D = 250.0            # depositors' semi-elasticity of bank choice (per unit of quarterly rate): deposit spread about 2%/yr
+        self.a_D = 150.0            # depositors' semi-elasticity of bank choice (per unit of quarterly rate): savings spread about 2%/yr
         self.a_L = 250.0            # borrowers' semi-elasticity: loan spread about 2%/yr
         self.g_loss = 0.05          # loss-rate gain
         self.cap_B = 0.08           # bank capital target, share of loans
@@ -435,7 +435,24 @@ class Macro:
                 g = cost_fn(x, sh)
                 lo, hi = (x, hi) if g > 0 else (lo, x)
             return 0.5 * (lo + hi)
-        rd = br(aD, self.rd_post, 1.0, lambda x, sh: (i - x) - 1.0 / (aD * (1 - sh)))          # >0: raise rd
+        if mp.two_accounts and getattr(self, "_spend_last", None) is not None:
+            # savings rate with checking: a bank values every deposit it keeps at the policy rate (what replacing it
+            # would cost) and pays rd only on savings; within the bank, households split balances by Baumol-Tobin,
+            # S(rd) = sum max(D_h - sqrt(K_h / rd), 0), K_h = c_tr yhat_h spend_h / 2; across banks they choose by logit
+            #   max over rd   s(rd) [ i D - rd S(rd) ],   given rivals' last posted savings rate
+            D_h = np.maximum(self.b, 0.0); K_h = mp.c_tr * self.yhat * self._spend_last / 2
+            Dtot = D_h.sum()
+            def prof(x):
+                x = max(x, 1e-7)
+                Sx = np.maximum(D_h - np.sqrt(K_h / x), 0.0).sum()
+                sh = 1.0 / (1.0 + (NB - 1) * np.exp(aD * (self.rd_post - x)))
+                return sh * (i * Dtot - x * Sx)
+            grid = np.linspace(0.0, max(i, 1e-4), 201)
+            vals = np.array([prof(x) for x in grid])
+            k = int(vals.argmax()); lo_, hi_ = grid[max(k - 1, 0)], grid[min(k + 1, 200)]
+            fine = np.linspace(lo_, hi_, 41); rd = float(fine[np.argmax([prof(x) for x in fine])])
+        else:
+            rd = br(aD, self.rd_post, 1.0, lambda x, sh: (i - x) - 1.0 / (aD * (1 - sh)))          # >0: raise rd
         rd = max(0.0, rd)
         rL = br(aL, self.rL_post, -1.0, lambda x, sh: -(x * (1 - lam) - i - (1 - lam) / (aL * (1 - sh))))  # >0: raise rL
         self.rd_post, self.rL_post = rd, rL
@@ -857,6 +874,7 @@ class Macro:
                 # checking pays nothing; savings pay rb. Baumol-Tobin: the checking balance that minimizes transfer
                 # costs plus forgone interest is sqrt(cost x spending / (2 rb)); at rb = 0 everything sits in checking
                 spend = np.maximum(S_h * fill, 1e-12)
+                self._spend_last = spend
                 M_chk = np.minimum(db, np.sqrt(mp.c_tr * self.yhat * spend / (2 * max(rb, 1e-9)))) if rb > 0 else db
                 sav = np.maximum(db - M_chk, 0.0)
                 int_hh = rb * sav.sum()
