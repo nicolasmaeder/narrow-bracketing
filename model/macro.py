@@ -49,7 +49,14 @@ class MParams:
         # bank
         self.m_b = 0.005            # deposit rate = policy - m_b (floor 0)
         self.m_a = 0.0              # retirement-account rate = policy + m_a
-        self.m_L = 0.005            # loan rate margin
+        self.m_L = 0.005            # loan rate margin (used only if bank_objective is False)
+        # banks (Monti-Klein in monopolistic competition): NB symmetric banks; depositors and borrowers choose banks by
+        # random utility in the rate (logit semi-elasticities a_D, a_L); each bank sets its rates to maximize expected
+        # profit given rivals' last posted rates, its funding cost (policy rate) and its own loss history
+        self.bank_objective = True
+        self.NB = 5
+        self.a_D = 250.0            # depositors' semi-elasticity of bank choice (per unit of quarterly rate): deposit spread about 2%/yr
+        self.a_L = 250.0            # borrowers' semi-elasticity: loan spread about 2%/yr
         self.g_loss = 0.05          # loss-rate gain
         self.cap_B = 0.08           # bank capital target, share of loans
         # government
@@ -185,6 +192,7 @@ class Macro:
         self.g = 0.0
         self.g = -self.reserves()
         self.loss_e = 0.0
+        self.rd_post, self.rL_post = max(0.0, mp.i_star - mp.m_b), mp.i_star + mp.m_L   # banks' last posted rates
         self.pi_e = mp.pi_star
         self.u_prev = mp.u_star
         self.P_prev = P0
@@ -399,6 +407,28 @@ class Macro:
         k = val.argmax(1); idx = np.arange(self.mp.F)
         return xg[idx, k] * We, om[idx, k]
 
+    def bank_rates(self, i):
+        """Each bank's best response to rivals' last posted rates (all banks symmetric, so one is computed):
+            deposits:  max over rd  (i - rd) s_D(rd),  s_D = e^{a_D rd} / (e^{a_D rd} + (NB-1) e^{a_D rd_rivals})
+                       FOC: i - rd = 1 / (a_D (1 - s_D)), and rd >= 0 (depositors can hold cash);
+            loans:     max over rL  (rL (1 - loss) - i) s_L(rL),  s_L logit with -a_L rL
+                       FOC: rL = i / (1 - loss) + 1 / (a_L (1 - s_L))."""
+        mp = self.mp
+        NB, aD, aL, lam = mp.NB, mp.a_D, mp.a_L, self.loss_e
+        def br(a, x_riv, sign, cost_fn):
+            lo, hi = x_riv - 0.05, x_riv + 0.05
+            for _ in range(60):
+                x = 0.5 * (lo + hi)
+                sh = 1.0 / (1.0 + (NB - 1) * np.exp(sign * a * (x_riv - x)))
+                g = cost_fn(x, sh)
+                lo, hi = (x, hi) if g > 0 else (lo, x)
+            return 0.5 * (lo + hi)
+        rd = br(aD, self.rd_post, 1.0, lambda x, sh: (i - x) - 1.0 / (aD * (1 - sh)))          # >0: raise rd
+        rd = max(0.0, rd)
+        rL = br(aL, self.rL_post, -1.0, lambda x, sh: -(x * (1 - lam) - i - (1 - lam) / (aL * (1 - sh))))  # >0: raise rL
+        self.rd_post, self.rL_post = rd, rL
+        return rd, rL
+
     def anchored(self, g_obs):
         """Belief about nominal growth: Bayesian with a prior centered on the published inflation target that is
         never forgotten (weight anchor) and evidence discounted at a constant rate (the EWMA g_obs)."""
@@ -525,10 +555,14 @@ class Macro:
         i = max(0.0, (self.i_prev if mp.fix_policy else mp.rho_i * self.i_prev + (1 - mp.rho_i) * rule) + i_shock)
         self.i_prev = i - i_shock
         # 2. bank and government post
-        rb = max(0.0, i - mp.m_b)
+        if mp.bank_objective:
+            rb, rL = self.bank_rates(i)
+        else:
+            rb = max(0.0, i - mp.m_b)
         self.rb_lr = (1 - mp.g_lr) * self.rb_lr + mp.g_lr * rb
         ra = (self.rb_lr + mp.erp) if mp.fund else i + mp.m_a    # posted return on retirement balances
-        rL = (1 + i + mp.m_L) / (1 - self.loss_e) - 1
+        if not mp.bank_objective:
+            rL = (1 + i + mp.m_L) / (1 - self.loss_e) - 1
         GDP_a = sum(self.GDP_hist[-4:])                       # last four quarters, nominal
         debt = -self.g
         if self.budget_prev is not None:
@@ -639,13 +673,25 @@ class Macro:
             # uncertainty) given the stock the firm expects to carry over
             self.p, S, mu_s, v = self.price_and_stock(W_firm, r_own, S_cap=self.inv)
             sd = np.sqrt(self.sig2)
+            self._mu_lag, self._inv_lag = mu_s.copy(), self.inv.copy()
             d2 = (np.log(mu_s / np.maximum(self.inv, 1e-12)) - sd ** 2 / 2) / sd
             Esales = mu_s - (mu_s * ndtr(d2 + sd) - self.inv * ndtr(d2))
             carry = np.maximum(self.inv - Esales, 0.0) * (1 - mp.inv_decay)
-            S_next = self.stock_target(W_firm, self.p, mu_s, v, carry, sd * np.sqrt(2))
-            y_plan = np.maximum(0.0, S_next - carry)
             if mp.wage_posting and mp.vacancies and mp.hiring == "convex":
+                # production is planned at the marginal cost of the labor that makes it, the same cost the hiring
+                # decision uses: the wage, plus (if the firm is adding workers) the marginal hiring cost spread over
+                # expected tenure
+                x_ = w_post / We
+                Tq = mp.q_ref / np.maximum(np.minimum(1.0, qf * x_ ** mp.eta_L), 1e-3)
+                mch = (1 + mp.psi_h) * mp.kappa_h * Tq * (H_want / np.maximum(stay, 1.0)) ** mp.psi_h
+                tenure_r = r_own + hp.sep + Q * x_ ** (-mp.eta_L)
+                om_e = w_post * (1 + np.where(H_want > 1e-9, mch * tenure_r, 0.0))
+                S_next = self.stock_target(om_e, self.p, mu_s, v, carry, sd * np.sqrt(2))
+                y_plan = np.maximum(0.0, S_next - carry)
                 y_plan = np.minimum(y_plan, Z * self.K ** a_ * np.maximum(L_exp, 0.0) ** (1 - a_))
+            else:
+                S_next = self.stock_target(W_firm, self.p, mu_s, v, carry, sd * np.sqrt(2))
+                y_plan = np.maximum(0.0, S_next - carry)
         P = float(self.p @ self.share_prev)                   # posted price index (last quarter's shares)
         if not mp.prod_lag:
             y_plan = np.maximum(0.0, S - self.inv)
@@ -780,6 +826,7 @@ class Macro:
         self.inv = (avail - sold) * (1 - mp.inv_decay) + (y if mp.prod_lag else 0.0)
         if getattr(self, "trace_on", False) and mp.vacancies:
             self.trace[-1].update(sold=float(sold[0]), dem=float(q_dem[0]), avail=float(avail[0]))
+        self._qd, self._sold, self._avail = q_dem.copy(), sold.copy(), avail.copy()
         self.share_prev_used = self.share_prev
         self.share_prev = revenue / max(spent, 1e-12)
 

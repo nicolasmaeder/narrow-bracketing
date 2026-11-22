@@ -22,13 +22,16 @@ Code for a macro model that is computed one quarter at a time. Every agent decid
 
 ## Status
 
-Current default economy (all decisions from objectives, beliefs from own records or published statistics):
+`model/DECISIONS.md` lists every decision, its objective and its information. `model/check_principles.py` checks the accounting (reserves stay at zero to about 1e-15 of deposits) and that a quarter depends only on the state.
 
-- **Pay**: reviewed once a year (staggered). Each firm chooses relative pay to minimize cost per worker including replacing departures (Salop). Market pay growth is forecast from published inflation and unemployment (discounted least squares). No nominal cuts.
-- **Hiring**: each quarter a firm chooses hires. A worker's value is marginal revenue product minus wage over expected tenure. Hiring costs are convex in the firm's hiring rate (about 18 weeks of wages per hire) and rise with published tightness. They are paid as the new hire's lost output in the first quarter. Layoffs happen when marginal revenue product falls below the wage. A matching function with this quarter's openings and unemployed sets contacts.
-- **Prices**: reviewed every three quarters (staggered). Firms learn demand from their sales plus backorders (orders placed with them that they could not fill), not from spillover from rivals.
-- **Calibration**: workers' response to relative pay 8; recruiting cost scale 20; neutral rate 5%.
-- **Long run (3 seeds)**:
-  - Unemployment 3.7–4.8% (sd 0.7–1.2 points); inflation about 2% (sd 0.6–1.0).
-  - Openings per unemployed about 0.8; labor share about 0.49.
-- **Open**: a shortage economy. About 8% of goods demand goes unmet every quarter and inventories are zero, so a stimulus check raises prices but not output. With censored demand learning (`censored=True`, `g_A=0.03`), inventories exist and demand is met (98%), but firms' slow learning produces an 8-year boom-bust cycle (inflation sd about 3). The planned fix is production lags: output made this quarter is sold next quarter, so firms hold stock as a buffer.
+Since the last version:
+- **Production takes a quarter.** Price rations stock on hand, and production targets next quarter's stock.
+- **One marginal labor cost.** Production is planned at the marginal cost of the labor that makes it, the same cost the hiring decision uses.
+- **Banks optimize.** Deposit and loan rates come from Monti–Klein profit maximization by 5 symmetric banks, with customers choosing banks by logit in the rate. Spreads are about 2% a year.
+
+Long run over 3 seeds: unemployment 5.7–6.5% (sd 2.3–3.5 points), inflation 2.0–2.6%, labor share about 0.51, openings per unemployed about 0.65.
+
+Open:
+- About 11% of goods demand goes unmet in a quarter. Unmet orders effectively become backlog, since households keep the cash and spend it later.
+- Unemployment is somewhat volatile.
+- Review timing is fixed rather than state-dependent.
