@@ -44,7 +44,7 @@ class MParams:
         self.taste_sd = 0.10        # buyers' idiosyncratic taste shocks across firms (sd of log weight)
         self.inv_decay = 0.03       # inventory carrying loss per quarter (spoilage, obsolescence)
         self.phi_K = 2.0            # convex capital adjustment cost (x P K x (dK/K)^2 / 2)
-        self.g_A = 0.05             # firms' forgetting rate on own-demand evidence (level)
+        self.g_A = 0.10             # firms' forgetting rate on own-demand evidence (level)
         self.g_sig = 0.05           # forgetting rate on own forecast errors (noise)
         # bank
         self.m_b = 0.005            # deposit rate = policy - m_b (floor 0)
@@ -78,15 +78,15 @@ class MParams:
         self.fund_cash_q = 0.5      # cash kept for withdrawals, in quarters of withdrawals
         # wage posting (replaces the wage rule)
         self.wage_posting = True    # False = placeholder wage rule (v3 results)
-        self.eta_L = 3.0            # workers' elasticity of job choice to the relative wage (logit)
+        self.eta_L = 8.0            # workers' elasticity of job choice to the relative wage (logit)
         self.ojs = 0.10             # share of employed workers searching on the job each quarter
         self.hiring = "convex"      # vacancy mode: firms choose hires with convex recruiting costs ("convex") or post openings for the whole gap ("gap")
-        self.kappa_h = 6.0          # recruiting cost scale: average cost per hire = kappa_h x T x (hiring rate)^psi_h quarters of a worker's time
+        self.kappa_h = 20.0         # recruiting cost scale: average cost per hire = kappa_h x T x (hiring rate)^psi_h quarters of a worker's time
         self.psi_h = 1.0            # convexity: marginal cost per hire = (1 + psi_h) x average (Blatter et al.: marginal about 2x average)
         self.q_ref = 0.8            # job-filling rate at which tightness adds nothing to recruiting cost
         self.g_pub = 0.25           # forgetting rate on published labor statistics
         self.public_labor = True    # with vacancies: fill and quit beliefs from published labor-market statistics
-        self.censored = True        # firms learn demand from sales and sell-outs only (censored demand)
+        self.censored = False       # True: firms see only sales and sell-outs (censored); False: they also see backorders (orders placed with them that they could not fill), not spillover from rivals
         self.cap_aware = True       # firms price for the output the labor they expect to get can make
         self.review_p = 3           # quarters between a firm's price reviews (staggered); 1 = every quarter
         self.wage_forecast = True   # firms forecast market pay growth from published inflation and unemployment
@@ -162,6 +162,7 @@ class Macro:
         self.theta = 1.0                          # last quarter's vacancies per unemployed worker
         self.q_mkt, self.Q_mkt = 0.8, 0.02        # published job-filling and quit rates
         self.q_bel, self.Q_bel = 0.8, 0.02        # firms' beliefs: discounted averages of the published rates
+        self.hfill = np.ones(F)                   # belief: share of wanted hires that actually arrive
         self.lnphi = np.zeros(F)                  # belief: log share of planned labor actually obtained
         self.lnq = np.full(F, np.log(0.7))        # belief: hires per vacancy (fill rate) at relative pay 1
         self.Wbar_hist = [self.W] * 5
@@ -591,7 +592,8 @@ class Macro:
             # prices and stocks for the output that labor can make: a firm short of workers raises its price
             L_plan = L_need(np.maximum(0.0, S - self.inv))
             if mp.vacancies and mp.hiring == "convex":
-                L_exp = stay + H_want - np.minimum(R_rec, H_want)   # incumbents who stay + new hires' output net of their start-up cost
+                Hx = H_want * self.hfill                      # hires it expects to actually get (own record)
+                L_exp = stay + Hx - np.minimum(R_rec * self.hfill, Hx)   # incumbents who stay + new hires net of start-up cost
                 cap = self.inv + Z * self.K ** a_ * np.maximum(L_exp, 0.0) ** (1 - a_)
             elif mp.vacancies:
                 # with posted vacancies the firm knows its workforce: incumbents expected to stay, plus the hires its
@@ -631,6 +633,10 @@ class Macro:
             if mp.vacancies:
                 Ld, emp, quits, apps, V, L_prev = self.labor_market(w_post, We, L_keep, work, L_target=L_tgt, q_fill=qf,
                                                                     hires=H_want if mp.hiring == "convex" else None)
+                if mp.hiring == "convex":                         # belief: share of wanted hires that arrive
+                    hw = H_want > 1e-6
+                    obs_h = np.clip(self.hired_last / np.maximum(H_want, 1e-9), 0.0, 1.0)
+                    self.hfill = np.where(hw, (1 - mp.g_L) * self.hfill + mp.g_L * obs_h, self.hfill)
                 obs_f = np.log(np.maximum(self.hired_last, 1e-6) / np.maximum(V, 1e-9)) - mp.eta_L * np.log(w_post / We)
                 self.lnq = np.where(V > 1e-9, (1 - mp.g_L) * self.lnq + mp.g_L * obs_f, self.lnq)
                 Lw = Ld.copy()                                    # workers paid

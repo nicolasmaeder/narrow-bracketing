@@ -24,15 +24,11 @@ Code for a macro model that is computed one quarter at a time. Every agent decid
 
 Current default economy (all decisions from objectives, beliefs from own records or published statistics):
 
-- **Pay**: reviewed once a year (staggered). Each firm chooses relative pay to minimize cost per worker including replacing departures (Salop turnover model). Market pay growth is forecast from published inflation and unemployment by discounted least squares. No nominal cuts (morale).
-- **Hiring**: each quarter a firm chooses hires. A worker's value is marginal revenue product minus wage over expected tenure, with marginal revenue along the firm's own demand belief. Hiring costs are convex in the firm's hiring rate (Blatter, Muehlemann & Schenker; Gavazza, Mongey & Violante) and rise with published tightness. They are paid as new hires' start-up output loss. Layoffs happen when marginal revenue product falls below the wage. A matching function with this quarter's openings and unemployed sets job contacts. Fill and quit beliefs are discounted averages of the published rates.
-- **Prices**: reviewed every three quarters (staggered). Between reviews firms choose only stock. Firms learn demand from their own sales and sell-outs (censored).
-- **Long run (3 seeds)**: unemployment 3.3–4.4% (sd 1.4–4.4 points), inflation about 2%, policy rate about 5.5%, unmet goods demand 6–8%.
-- **Policy responses (4 seeds)**:
-  - A stimulus check of 1% of GDP raises output 0.9% on impact; unemployment falls by up to 0.2 points.
-  - A 1-point rate rise lowers output by up to 0.7% and raises unemployment by 0.1–0.2 points. Inflation first rises about 1 point through firms' financing costs, then falls about 1 point.
-- **Open**:
-  - The labor share is 0.41–0.45 (US about 0.57).
-  - Openings per unemployed run 3–6 (US 0.5–2).
-  - One seed is much noisier.
-  - Bank rate margins are not yet derived from an objective.
+- **Pay**: reviewed once a year (staggered). Each firm chooses relative pay to minimize cost per worker including replacing departures (Salop). Market pay growth is forecast from published inflation and unemployment (discounted least squares). No nominal cuts.
+- **Hiring**: each quarter a firm chooses hires. A worker's value is marginal revenue product minus wage over expected tenure. Hiring costs are convex in the firm's hiring rate (about 18 weeks of wages per hire) and rise with published tightness. They are paid as the new hire's lost output in the first quarter. Layoffs happen when marginal revenue product falls below the wage. A matching function with this quarter's openings and unemployed sets contacts.
+- **Prices**: reviewed every three quarters (staggered). Firms learn demand from their sales plus backorders (orders placed with them that they could not fill), not from spillover from rivals.
+- **Calibration**: workers' response to relative pay 8; recruiting cost scale 20; neutral rate 5%.
+- **Long run (3 seeds)**:
+  - Unemployment 3.7–4.8% (sd 0.7–1.2 points); inflation about 2% (sd 0.6–1.0).
+  - Openings per unemployed about 0.8; labor share about 0.49.
+- **Open**: a shortage economy. About 8% of goods demand goes unmet every quarter and inventories are zero, so a stimulus check raises prices but not output. With censored demand learning (`censored=True`, `g_A=0.03`), inventories exist and demand is met (98%), but firms' slow learning produces an 8-year boom-bust cycle (inflation sd about 3). The planned fix is production lags: output made this quarter is sold next quarter, so firms hold stock as a buffer.
