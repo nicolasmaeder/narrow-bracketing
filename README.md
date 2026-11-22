@@ -36,6 +36,12 @@ Long run over 4 seeds (800 quarters): unemployment 3.6–4.5% (sd 0.9–1.6), in
 
 Derived aggregate technology (2 seeds, 700 quarters): technical change is labor-augmenting (labor productivity of techniques +2.0% a year, capital productivity +0.0–0.1%); the capital share is stable while the wage-rental ratio rises 2% a year, so the long-run aggregate elasticity of substitution is 0.96–1.00 (Cobb-Douglas) although each firm's is 0.5; over 5-year windows it is about zero. This is Jones's result, produced by firms' decisions.
 
+
+Experiments, 16 seeds, common random numbers (`model/experiments_many.py`, `model/analyze_many.py`; mean and 5–95% range across seeds), no crises in any baseline:
+- Policy-rate shock (+1 pp, decaying 0.8 a quarter): output −0.2% after 3–4 quarters, unemployment +0.13 pp, inflation −0.3 pp on impact and −0.15 to −0.2 pp for two years. Fixed vs current planning return makes almost no difference. Consumption rises 0.3% on impact (households are all net savers, so higher rates raise their interest income) and turns negative after a year; investment falls 3.7%.
+- Stimulus check (1% of annual GDP): output +0.2% at quarters 4–7, unemployment −0.07 pp, inflation +1.4 pp in the first quarter.
+- Withholding cut (same total, 4 quarters): similar output, smaller and more drawn-out inflation. With state-dependent pricing, cumulative nominal household spending is not lower than after the check (4.3% vs 3.7% of quarterly GDP over 8 quarters), unlike with fixed price reviews (1.5% vs 3.2%); this needs a partial-equilibrium MPC measure to separate household behavior from wage and price responses.
+
 Open:
 - About 11% of goods demand goes unmet in a quarter. Unmet orders effectively become backlog, since households keep the cash and spend it later.
 - Unemployment is somewhat volatile.
