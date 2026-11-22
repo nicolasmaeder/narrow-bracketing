@@ -53,6 +53,8 @@ class MParams:
         # banks (Monti-Klein in monopolistic competition): NB symmetric banks; depositors and borrowers choose banks by
         # random utility in the rate (logit semi-elasticities a_D, a_L); each bank sets its rates to maximize expected
         # profit given rivals' last posted rates, its funding cost (policy rate) and its own loss history
+        self.two_accounts = True    # households split liquid balances between checking (no interest) and savings
+        self.c_tr = 0.001           # cost of a transfer between savings and checking, share of quarterly income (Baumol-Tobin)
         self.bank_objective = True
         self.NB = 5
         self.a_D = 250.0            # depositors' semi-elasticity of bank choice (per unit of quarterly rate): deposit spread about 2%/yr
@@ -851,8 +853,18 @@ class Macro:
         # 7. settlement
         db = db + S_h * (1 - fill)                            # unspent cash stays in the buffer
         if mp.fund:
-            int_hh = rb * db.sum()
-            self.b = (1 + rb) * db
+            if mp.two_accounts:
+                # checking pays nothing; savings pay rb. Baumol-Tobin: the checking balance that minimizes transfer
+                # costs plus forgone interest is sqrt(cost x spending / (2 rb)); at rb = 0 everything sits in checking
+                spend = np.maximum(S_h * fill, 1e-12)
+                M_chk = np.minimum(db, np.sqrt(mp.c_tr * self.yhat * spend / (2 * max(rb, 1e-9)))) if rb > 0 else db
+                sav = np.maximum(db - M_chk, 0.0)
+                int_hh = rb * sav.sum()
+                self.b = db + rb * sav
+                self._chk_share = float(M_chk.sum() / max(db.sum(), 1e-12))
+            else:
+                int_hh = rb * db.sum()
+                self.b = (1 + rb) * db
             a_pre = self.a + da                               # contributions and withdrawals at the fund's value
             self.Fc += da.sum()
             f_int = (rb if self.Fc > 0 else rL) * self.Fc
@@ -863,7 +875,7 @@ class Macro:
             self.a = (1 + ra) * (self.a + da)
             f_int = 0.0
         # firms: interest; overdraft if short
-        m_int = rb * np.maximum(self.m, 0)
+        m_int = (0.0 if mp.two_accounts else rb) * np.maximum(self.m, 0)   # firms' cash sits in checking
         int_f = rL * self.loan
         self.m += m_int - int_f
         short = np.maximum(0.0, -self.m)
@@ -983,7 +995,7 @@ class Macro:
                     Y=sold.sum(), C=c_real.sum(), I=I_real.sum(), GDP=GDP, fill=fill, inv=self.inv.sum(),
                     K=self.K.sum(), loans=self.loan.sum(), debt=-self.g, E_B=self.E_B, B=self.b.sum(),
                     A=self.a.sum(), M_f=self.m.sum(), defaults=int((loss > 0).sum()), loss_rate=loss_rate,
-                    reserves=self.reserves() - self.R0, theta=self.theta, price_changes=float(np.mean(np.abs(self.p / self._p_old - 1) > 1e-9)) if getattr(self, "_p_old", None) is not None else 1.0, vac=float(self.vac_last) if mp.wage_posting else 0.0, contact=float(self.c_rate_last), y=y.sum(), Ld_pre=Ld_pre, div=div_f.sum() + div_B, profit_share=(div_f.sum()) / max(GDP, 1e-12),
+                    reserves=self.reserves() - self.R0, theta=self.theta, chk_share=getattr(self, "_chk_share", 1.0), price_changes=float(np.mean(np.abs(self.p / self._p_old - 1) > 1e-9)) if getattr(self, "_p_old", None) is not None else 1.0, vac=float(self.vac_last) if mp.wage_posting else 0.0, contact=float(self.c_rate_last), y=y.sum(), Ld_pre=Ld_pre, div=div_f.sum() + div_B, profit_share=(div_f.sum()) / max(GDP, 1e-12),
                     wage_share=wb_f.sum() / max(GDP, 1e-12), wage_disp=float(np.std(np.log(W_firm * np.ones(F)))), spend_h=S_h.sum() * fill, contrib=da[da > 0].sum(),
                     withdraw=-da[da < 0].sum(), kappa_mean=float(self.kappa[work].mean()),
                     markup=float(np.mean(self.p)) / uc_rec,

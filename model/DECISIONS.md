@@ -14,6 +14,7 @@ Policy rules (the central bank's interest-rate rule and the government's tax rul
 | Agent | Decision | Objective | Beliefs / information | Updating |
 |---|---|---|---|---|
 | Household (worker) | consumption, liquid buffer | one-quarter utility of consumption plus value of buffer relative to a published target (1.5 quarters of income); entry cost for drawing the buffer below its starting balance (mental accounts, Shefrin–Thaler) | own income (EWMA), posted prices and rates | own income |
+| Household | checking vs savings | Baumol–Tobin: checking balance minimizes transfer costs plus interest forgone on checking, √(transfer cost × spending / (2 × savings rate)); checking pays nothing | own spending and income, posted savings rate | — |
 | Household (worker) | retirement contribution rate | calculator: contribution that reaches the published retirement target at a published planning return; re-planned only outside a band | own balance, own income | — |
 | Household (retiree) | drawdown | balance ÷ quarters left (log utility with zero perceived return) | own balance, age | — |
 | Buyer | which firm to buy from | random utility (logit in relative price) | posted prices | — |
@@ -23,8 +24,8 @@ Policy rules (the central bank's interest-rate rule and the government's tax rul
 | Firm | hires and layoffs | marginal revenue product along own demand belief, minus wage, over expected tenure, net of convex hiring costs (Blatter et al.; Gavazza–Mongey–Violante); layoffs when marginal revenue product falls below the wage | published job-filling and quit rates; own record of the share of wanted hires that arrive | discounted averages |
 | Firm | pay (reviewed yearly, staggered; no nominal cuts) | cost per worker including replacing departures (Salop turnover model); a nominal cut lowers incumbents' effort (Bewley) | expected market pay growth | discounted least squares on published pay, inflation, unemployment |
 | Firm | capital | expected labor cost of expected sales plus user cost plus convex adjustment cost (Jorgenson) | own cost of funds | — |
-| Firm | dividends, borrowing | pay out accounting profit; use spare cash to repay loans (deposit rate < loan rate) | own accounts | — |
-| Bank (5 symmetric; consolidated balance sheet) | deposit and loan rates | expected profit given rivals' last posted rates; depositors and borrowers choose banks by logit in the rate (Monti–Klein; Drechsler–Savov–Schnabl) | own loss history, policy rate | discounted average of loss rates |
+| Firm | dividends, borrowing | pay out accounting profit; use spare cash to repay loans (cash sits in checking at zero interest, loans cost the loan rate) | own accounts | — |
+| Bank (5 symmetric; consolidated balance sheet) | savings and loan rates (checking pays nothing) | expected profit given rivals' last posted rates; depositors and borrowers choose banks by logit in the rate (Monti–Klein; Drechsler–Savov–Schnabl) | own loss history, policy rate | discounted average of loss rates |
 | Retirement fund | valuation, investment of cash | values firms at trailing earnings over its assumed return (long-run deposit rate it has observed plus a published premium); keeps cash for withdrawals, invests the rest in its firms | own earnings records, deposit-rate history | discounted averages |
 | Central bank | policy rate | smoothed Taylor rule (policy primitive) | published inflation, unemployment | — |
 | Government | payroll tax | structural budget plus debt correction (policy primitive) | own budget | — |

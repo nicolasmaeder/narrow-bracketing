@@ -29,7 +29,9 @@ Since the last version:
 - **One marginal labor cost.** Production is planned at the marginal cost of the labor that makes it, the same cost the hiring decision uses.
 - **Banks optimize.** Deposit and loan rates come from Monti–Klein profit maximization by 5 symmetric banks, with customers choosing banks by logit in the rate. Spreads are about 2% a year.
 
-Long run over 3 seeds: unemployment 5.7–6.5% (sd 2.3–3.5 points), inflation 2.0–2.6%, labor share about 0.51, openings per unemployed about 0.65.
+- **Two kinds of deposit.** Checking pays nothing; savings pay a rate set by the banks' profit problem. Households split their liquid balances by Baumol–Tobin, keeping about 31% in checking. Firms' cash sits in checking.
+
+Long run over 2 seeds: unemployment about 6.2% (sd about 2.6 points), inflation about 2.5%, savings rate about 1.9 points below the policy rate, labor share about 0.51.
 
 Open:
 - About 11% of goods demand goes unmet in a quarter. Unmet orders effectively become backlog, since households keep the cash and spend it later.
