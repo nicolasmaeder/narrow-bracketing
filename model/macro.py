@@ -57,7 +57,7 @@ class MParams:
         self.phi_G = 0.02           # tax response to debt gap
         self.g_tax = 0.05           # gain on the observed budget share used to set the tax rate
         # central bank
-        self.i_star = 0.0075        # neutral policy rate per quarter (3% a year)
+        self.i_star = 0.0125        # neutral policy rate per quarter (5% a year; this economy needs about that to run at u* and pi*)
         self.pi_star = 0.005        # inflation target per quarter (2% a year)
         self.u_star = 0.05
         self.phi_pi, self.phi_u = 1.5, 0.1
@@ -88,6 +88,8 @@ class MParams:
         self.public_labor = True    # with vacancies: fill and quit beliefs from published labor-market statistics
         self.censored = True        # firms learn demand from sales and sell-outs only (censored demand)
         self.cap_aware = True       # firms price for the output the labor they expect to get can make
+        self.wage_forecast = True   # firms forecast market pay growth from published inflation and unemployment
+        self.g_F = 0.02             # forgetting rate of that forecast (discounted least squares)
         self.review_q = 4           # quarters between a firm's wage reviews (staggered across firms): annual
         self.anchor = 0.0           # weight of the published inflation target in firms' nominal growth beliefs (off)
         self.match_el = 0.5         # elasticity of the contact rate to labor-market tightness (matching function)
@@ -152,6 +154,10 @@ class Macro:
         self.job[ew] = self.rng.integers(0, F, len(ew))
         self.w = np.full(F, self.W)
         self.gW_e = mp.pi_star
+        # pay-growth forecast: prior that market pay follows price inflation one for one
+        self.thW = np.array([0.0, 1.0, 0.0])
+        self.RW = np.diag([1.0, 1e-4, 1e-3])
+        self.xW = np.array([1.0, mp.pi_star, mp.u_star]); self.g_fore = mp.pi_star
         self.theta = 1.0                          # last quarter's vacancies per unemployed worker
         self.q_mkt, self.Q_mkt = 0.8, 0.02        # published job-filling and quit rates
         self.q_bel, self.Q_bel = 0.8, 0.02        # firms' beliefs: discounted averages of the published rates
@@ -512,7 +518,14 @@ class Macro:
             # in its own beliefs: incumbents who stay (quits fall with its relative wage) plus applicants (rise with
             # it). It picks the wage, paid to all its workers, that maximizes the quarter's expected profit, and it
             # does not cut its own nominal wage (a cut lowers the effort of all incumbents: morale, Bewley).
-            We = self.Wbar_obs() * (1 + self.anchored(self.gW_e))
+            if mp.wage_forecast:
+                # expected market pay growth: forecast from published data (last year's inflation, unemployment) by
+                # discounted least squares on the published pay series
+                self.xW = np.array([1.0, np.mean(self.pi_hist[-4:]), self.u_prev])
+                self.g_fore = float(self.xW @ self.thW)
+                We = self.Wbar_obs() * (1 + self.g_fore)
+            else:
+                We = self.Wbar_obs() * (1 + self.anchored(self.gW_e))
             B, Q = np.exp(self.lnapp), np.exp(self.lnQ)
             L_prev = np.bincount(self.job[self.job >= 0], self.z[self.job >= 0], F)
             w0 = np.maximum(self.w, We)
@@ -823,6 +836,10 @@ class Macro:
             W_obs = self.Wbar_obs()
             self.Wbar_hist.append(W_obs)
             self.gW_e = (1 - mp.g_W) * self.gW_e + mp.g_W * (W_obs / W - 1)
+            if mp.wage_forecast:                              # discounted least squares (constant-gain RLS)
+                xw, yw, gF = self.xW, W_obs / W - 1, mp.g_F
+                self.RW = self.RW + gF * (np.outer(xw, xw) - self.RW)
+                self.thW = self.thW + gF * np.linalg.solve(self.RW, xw) * (yw - xw @ self.thW)
             self.W = W_obs
         else:
             self.W = W * (1 + mp.pi_star) if mp.fix_wage else max(W_new, mp.lam_W * W)

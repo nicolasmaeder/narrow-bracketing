@@ -2,7 +2,7 @@ import sys, json, numpy as np
 from multiprocessing import Pool
 from run_macro import build
 def run(kw):
-    m = build(seed=kw.pop("seed", 1), i_star=kw.pop("i_star", 0.0075))
+    m = build(seed=kw.pop("seed", 1), i_star=kw.pop("i_star", 0.0125))
     for t in range(300): m.step(record=False)
     Lf = m.z[m.age < m.hp.J_W].sum()
     m.lnq[:] = np.log(0.8); m.q_bel = 0.8; m.Q_bel = 0.03; m.theta = 0.5
