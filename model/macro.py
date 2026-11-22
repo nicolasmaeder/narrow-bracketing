@@ -98,6 +98,9 @@ class MParams:
         self.censored = False       # True: firms see only sales and sell-outs (censored); False: they also see backorders (orders placed with them that they could not fill), not spillover from rivals
         self.cap_aware = True       # firms price for the output the labor they expect to get can make
         self.menu_cost = 0.0        # > 0: state-dependent pricing with this menu cost (share of revenue); 0: fixed review_p
+        self.k_full = False         # capital decision uses the wage-based labor cost (as inventory)
+        self.v_full = False         # inventory valued at production cost at the wage (recruiting costs are not inventoriable), not including marginal hiring cost
+        self.v_marginal = True      # unsold stock valued at the marginal cost of replacing it (internal labor cost), not at a price-level-based unit cost
         self.flow_price = False      # with production lags: a reviewed price is set for the flow at the marginal cost of supply
         self.prod_lag = True        # production takes a quarter: goods made now are sold from next quarter on
         self.review_p = 3           # quarters between a firm's price reviews (staggered); 1 = every quarter
@@ -215,7 +218,7 @@ class Macro:
         return (W / (1 - a_)) ** (1 - a_) * (cK / a_) ** a_ / self.mp.Z
 
     # ------------------------------------------------------------------ firm problems
-    def price_and_stock(self, W, rL, S_cap=None):
+    def price_and_stock(self, W, rL, S_cap=None, W_int=None):
         """Quarter problem of each firm, from its own state (capital, inventory) and beliefs (demand level A,
         noise sigma), at the posted wage and loan rate and the last observed price index:
             max over p, S >= n:  p E[min(D, S)] + v E[(S - D)+] - C(S - n),   D = A (p/P)^(-e) xi,
@@ -227,8 +230,17 @@ class Macro:
         e_f = mp.eps * (1 - self.share_prev)                  # own-price elasticity buyers' choices imply
         sig = np.sqrt(self.sig2)
         uc = self.unit_cost(W, Pref * (rL + mp.delta))       # rL here is the firm's own marginal cost of funds (array)
-        v = (1 - mp.inv_decay) * uc / (1 + rL)
         kfac = (Z * self.K ** a_) ** (1 / (1 - a_))
+        if mp.v_marginal:
+            # a unit left unsold is worth what replacing it next quarter would cost: the marginal cost of producing
+            # it at the firm's normal output (expected sales) with the firm's internal cost of labor, net of spoilage,
+            # discounted at its cost of funds. The same cost the production decision uses.
+            Wi = np.broadcast_to(np.asarray(W if W_int is None else W_int, float), (F,))
+            y_n = np.exp(self.lnA)
+            mc_n = Wi / (1 - a_) * y_n ** (a_ / (1 - a_)) / kfac
+            v = (1 - mp.inv_decay) * mc_n / (1 + rL)
+        else:
+            v = (1 - mp.inv_decay) * uc / (1 + rL)
         Wc = np.broadcast_to(np.asarray(W, float), (F,))[:, None]   # each firm's own wage
         C = lambda y: Wc * (np.maximum(y, 0) ** (1 / (1 - a_))) / kfac[:, None]
         Cp = lambda y: Wc / (1 - a_) * np.maximum(y, 0) ** (a_ / (1 - a_)) / kfac[:, None]
@@ -713,7 +725,7 @@ class Macro:
             if mp.flow_price:
                 self.p, _, mu_s, v = self.price_and_stock(om_e, r_own)
             else:
-                self.p, S, mu_s, v = self.price_and_stock(W_firm, r_own, S_cap=self.inv)
+                self.p, S, mu_s, v = self.price_and_stock(W_firm, r_own, S_cap=self.inv, W_int=om_e if mp.v_full else W_firm)
             sd = np.sqrt(self.sig2)
             self._mu_lag, self._inv_lag = mu_s.copy(), self.inv.copy()
             d2 = (np.log(mu_s / np.maximum(self.inv, 1e-12)) - sd ** 2 / 2) / sd
@@ -732,7 +744,7 @@ class Macro:
         P = float(self.p @ self.share_prev)                   # posted price index (last quarter's shares)
         if not mp.prod_lag:
             y_plan = np.maximum(0.0, S - self.inv)
-        K_next = self.capital(W_firm, r_own, mu_s)
+        K_next = self.capital(om_e if (mp.prod_lag and mp.v_marginal and mp.k_full) else W_firm, r_own, mu_s)   # same internal cost of labor
         I_plan = np.maximum(0.0, K_next - (1 - mp.delta) * self.K)
         Ld = L_need(y_plan)
         Ld_pre = Ld.sum()
