@@ -273,6 +273,7 @@ class Macro:
         self.f_pub = 0.5                             # published job-finding rate of searchers
         self.cred_fac = 1.0                          # banks' credit standards: share of normal credit lines offered
         self.cred_shock = 0.0
+        self.cred_target = 0.0
         if mp.firm_eff and mp.tech:
             self.a_eff = mp.sd_a * self.rng.standard_normal(F)
             self.AK = self.AK * np.exp(self.a_eff); self.AL = self.AL * np.exp(self.a_eff)
@@ -1452,8 +1453,11 @@ class Macro:
         r_c = (float(np.mean(rL)) + mp.spread_c) if hp.cred_lim > 0 else None
         if hp.cred_lim > 0:
             # credit standards (a bank policy): normal lines, scaled down after a credit-standards shock, which decays
+            # a tightening is phased in (banks cut lines over about a year: 35% of the remaining gap each quarter)
+            # while the target itself decays
+            self.cred_shock += 0.35 * (self.cred_target - self.cred_shock)
+            self.cred_target *= mp.cred_shock_rho
             self.cred_fac = 1.0 - self.cred_shock
-            self.cred_shock *= mp.cred_shock_rho
         lim_h = hp.cred_lim * self.cred_fac
         cw, _, _, _, _ = solve_accounts(m_cash[w] - d_now, self.b[w], self.a[w] + d_now, self.yhat[w], G_j[w], P, rb, ra, hp, False, r_c=r_c, lim=lim_h)
         c[w], da[w] = cw, d_now

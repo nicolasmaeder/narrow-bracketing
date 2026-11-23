@@ -10,7 +10,7 @@ def run(seed):
     m=build(seed=seed, **KW)
     for t in range(400): m.step()
     m._mrp=None; a,b=copy.deepcopy(m),copy.deepcopy(m)
-    if SHOCK=='credit': b.cred_shock=SIZE          # banks cut credit lines by SIZE (decays at cred_shock_rho)
+    if SHOCK=='credit': b.cred_target=SIZE         # banks cut credit lines by SIZE, phased in (decays at cred_shock_rho)
     else: b.vshock=1-SIZE                           # asset values fall by SIZE
     A=[];B=[];tA=[];tB=[]
     for _ in range(H):
