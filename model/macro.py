@@ -171,6 +171,8 @@ class MParams:
         # most firms report constant or falling marginal cost); capacity is chosen for normal orders under uncertainty
         self.embodied = True       # techniques embodied in capital (Solow 1960 vintages; Jones and Liu 2024): a chosen
                                    # technique applies only to capital installed after it is chosen
+        self.k_amort = False       # capital adjustment cost spread over the capital's life (user-cost rate)
+        self.hire_long = False     # hiring values output along the long-run elasticity (False: same belief as pricing)
         self.clv_lr = False        # customers valued at the margin over long-run unit cost (capacity they need)
         self.cap_unc = False       # capacity planned for orders at the price without a capacity limit (see invest)
         self.utilization = False   # on: see README (destabilizes for now)
@@ -602,7 +604,10 @@ class Macro:
         # Jorgenson user cost: interest net of the expected rise in the price of capital goods, plus depreciation
         uK = P * (rL - (self.anchored(self.pi_e) if mp.jorgenson else 0.0) + mp.delta)
         L = lambda Kn: self._L_need_ces(s_hat, ub * Kn) if ub < 1 else self.L_need(s_hat, Kn)
-        f = lambda Kn: W * ub * self.mpk_over_mpl(ub * Kn, L(Kn)) - uK - mp.phi_K * P * (Kn - K) / K   # decreasing in K'
+        # the adjustment cost is paid once, the capital earns over its life: the cost is spread over that life at the
+        # user-cost rate (equivalently, the flow gain is compared with the annuity value of the one-time cost)
+        amort = (rL - (self.anchored(self.pi_e) if mp.jorgenson else 0.0) + mp.delta) if mp.k_amort else 1.0
+        f = lambda Kn: W * ub * self.mpk_over_mpl(ub * Kn, L(Kn)) - uK - amort * mp.phi_K * P * (Kn - K) / K   # decreasing in K'
         lo, hi = (1 - mp.delta) * K, 3 * K
         for _ in range(60):
             mid = 0.5 * (lo + hi)
@@ -692,7 +697,9 @@ class Macro:
         L_flow = self.L_need(mu)
         T = mp.q_ref / np.maximum(q_bel, 1e-3)
         Lb = np.maximum(L_stay, 1.0)
-        e_f = self.elast(short=False)                         # long run: hires are valued over their tenure
+        # the output a hire adds is sold along the same demand belief the price and stock decision uses (short run);
+        # with hire_long, along the long-run elasticity (customers come over the hire's tenure)
+        e_f = self.elast(short=not mp.hire_long)
         # marginal revenue product along the firm's own demand belief: selling more output y means a lower price,
         # p(y) = p (y / mu)^(-1/e), and marginal revenue p(y) (1 - 1/e)
         def mrp(L):
