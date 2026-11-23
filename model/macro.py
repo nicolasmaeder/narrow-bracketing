@@ -145,7 +145,19 @@ class MParams:
         self.adopt_cost = 0.02      # cost of adopting a technique (workers' time), share of a quarter's revenue
         self.g_T = 0.02             # forgetting rate on the firm's own record of technique turnover
         self.g_Y = 0.02             # forgetting rate on published real growth (final sales, labor productivity)
-        self.deficit_rule = False   # tax rule allows the deficit that keeps debt at its target share of growing GDP
+        # Federal Reserve (floor system with ample reserves, as in the US since 2008): the Taylor rule sets the target
+        # rate; interest on reserves (IOR) equals the target plus ior_spread; the discount rate (DR) is dr_spread
+        # above; no reserve requirement. Open-market operations: the Fed buys or sells Treasury bills each quarter so
+        # that reserves are res_target x annual GDP given the Treasury's account (TGA); the discount window covers any
+        # shortfall. Fed profit (bills + discount loans - IOR) is remitted to the Treasury.
+        self.res_target = 0.10      # reserves / annual nominal GDP (US 2024: about 11%)
+        self.tga_target = 0.025     # Treasury's account at the Fed / annual GDP (about 2.5%)
+        self.ior_spread = 0.0
+        self.dr_spread = 0.000625   # 0.25 points a year above the target
+        # government purchases of goods and services: a share of trend nominal GDP, split between the sectors
+        self.g_share = 0.17
+        self.g_sv = 0.5
+        self.deficit_rule = True    # tax rule allows the deficit that keeps debt at its target share of growing GDP
         self.invest_lr = True       # capital evaluated at the long-run cost of funds plus a hurdle premium
         self.fund_flow = False      # fund's valuation multiple moves with members' net flows (inelastic markets)
         self.k_rev = 0.02           # quarterly reversion of the multiple toward its fundamental value
@@ -314,6 +326,7 @@ class Macro:
         self.cred_fac = 1.0                          # banks' credit standards: share of normal credit lines offered
         self.cred_shock = 0.0
         self.cred_target = 0.0
+        self.Bills = self.SOMA = self.R_res = self.DW = self.TGA = 0.0   # Treasury bills, Fed holdings, reserves, discount loans, TGA
         self.cov = np.full(F, 4.0)                   # firms' interest coverage as the bank sees it (smoothed)
         self.dq = np.zeros(F, int)                   # consecutive quarters with a loan write-down
         self._n_exit = 0
@@ -1099,6 +1112,10 @@ class Macro:
 
     # ------------------------------------------------------------------ accounting
     def reserves(self):
+        """Balance-sheet check (must be exactly zero): the bank's reserves implied by its own balance sheet
+        (deposits + equity + discount loans - loans - its Treasury bills) minus the reserves on the Fed's balance
+        sheet (bills held + discount loans - TGA). self.g is the Treasury's net position (TGA - bills), so the
+        difference reduces to the expression below."""
         deposits = self.b.sum() + self.m.sum() + self.div_pending.sum() + self.g + self.Fc
         if not self.mp.fund:
             deposits += self.a.sum()
@@ -1585,10 +1602,14 @@ class Macro:
         # 6. goods market at posted prices; households and investing firms buy from the same firms
         S_h = P * c
         S_I = P_g * I_plan
-        S_tot = S_h.sum() + S_I.sum() + S_D.sum()
+        GDP_q = sum(self.GDP_hist[-4:]) / 4 * np.exp(self.gY + mp.pi_star)      # trend nominal GDP this quarter
+        S_G = mp.g_share * GDP_q
+        S_Gs = mp.g_sv * S_G if (mp.services and mp.weiss) else 0.0
+        S_Gg = S_G - S_Gs
+        S_tot = S_h.sum() + S_I.sum() + S_D.sum() + S_G
         sec, nsec = self.sec, 2
         if mp.services and mp.weiss:
-            S_sec = np.array([(1 - mp.s_sv) * S_h.sum() + S_I.sum() + S_D.sum(), mp.s_sv * S_h.sum()])
+            S_sec = np.array([(1 - mp.s_sv) * S_h.sum() + S_I.sum() + S_D.sum() + S_Gg, mp.s_sv * S_h.sum() + S_Gs])
         else:
             S_sec = np.array([S_tot, 0.0])
         Ssec_f = S_sec[sec]
@@ -1637,6 +1658,8 @@ class Macro:
             c_real = S_h * fill / Pp_s[0]
         P_paid = spent / max(sold.sum(), 1e-12)
         I_real = S_I * fill_g / Pp_s[0]
+        G_paid = S_Gg * fill_s[0] + (S_Gs * fill_s[1] if (mp.services and mp.weiss) else 0.0)
+        self._G_real = float(S_Gg * fill_s[0] / Pp_s[0] + ((S_Gs * fill_s[1] / Pp_s[1]) if (mp.services and mp.weiss) else 0.0))
         if mp.durables:
             self.dur = self.dur + gap_buy * fill_g             # durables delivered (rationed with other goods)
             self._D_real = float(S_D.sum() * fill_g / Pp_s[0])
@@ -1740,12 +1763,18 @@ class Macro:
         self.Ehat = (1 - mp.g_earn) * self.Ehat + mp.g_earn * profit
         self.Eq = (1 - 0.25) * getattr(self, "Eq", profit) + 0.25 * profit      # last year's earnings (smoothed)
         self.dq = np.where(self.Eq < 0, self.dq + 1, 0)
-        # government: interest on its account
-        g_int = (rb if self.g > 0 else i) * self.g
+        # Treasury bills pay the target rate; the bank earns bill interest and IOR and pays the discount rate; the Fed
+        # earns bill and discount-loan interest, pays IOR, and remits the rest to the Treasury (positions held during
+        # the quarter, set at the end of last quarter)
+        ior, dr = i + mp.ior_spread, i + mp.dr_spread
+        bank_int = i * (self.Bills - self.SOMA) + ior * self.R_res - dr * self.DW
+        remit = i * self.SOMA + dr * self.DW - ior * self.R_res
+        g_int = -i * self.Bills + remit                       # = -bank_int: the three balance sheets close
+        self._remit = remit
         # bank
         prof_B = int_f.sum() + max(-g_int, 0.0) - int_hh - m_int.sum() - max(g_int, 0.0) - loss.sum() - f_int + self._int_inst
         self.E_B += prof_B
-        div_B = max(0.0, self.E_B - mp.cap_B * (self.loan.sum() + max(-self.g, 0.0)))
+        div_B = max(0.0, self.E_B - mp.cap_B * self.loan.sum())       # Treasuries carry a zero risk weight
         self.E_B -= div_B
         # fund values each firm at trailing earnings capitalized at its assumed return: the long-run deposit rate
         # it has observed (discounted average of its own experience) plus its published equity premium
@@ -1786,7 +1815,7 @@ class Macro:
         repay = np.minimum(self.m, self.loan)
         self.m -= repay; self.loan -= repay
         transfers = benefit.sum() + pension.sum() + extra.sum()
-        self.g += tax_rev - transfers + g_int
+        self.g += tax_rev - transfers + g_int - G_paid
         # aging, pensions, estates (to the government)
         retiring = self.age == hp.J_W - 1
         self.pens = np.where(retiring, hp.pension * self.yhat / W, self.pens)
@@ -1828,7 +1857,7 @@ class Macro:
             self.emp[dead] = False
         # structural budget: benefits at u*, wage bill at u* (unemployment benefits are an automatic stabilizer)
         Lf = Lforce.sum()
-        self.budget_prev = (hp.ui * W * Lf * mp.u_star + pension.sum() - g_int - estate, W * Lf * (1 - mp.u_star))
+        self.budget_prev = (hp.ui * W * Lf * mp.u_star + pension.sum() - g_int - estate + G_paid, W * Lf * (1 - mp.u_star))
 
         # 8. learning, observed aggregates, next quarter's wage
         loss_rate = loss.sum() / max((self.loan + loss).sum(), 1e-12)
@@ -1898,8 +1927,16 @@ class Macro:
         uc_rec = float(np.mean(self.unit_cost(W, self.P_prev * (r_own + mp.delta))))
         self.P_prev = P_paid
         self.P_prev_sec = np.where(q_s > 0, Pp_s, P_paid)
-        GDP = spent                                           # final sales (consumption + investment), nominal
+        GDP = spent                                           # final sales (consumption + investment + government), nominal
         self.GDP_hist.append(GDP)
+        # Treasury: keeps its account at the Fed near target and issues bills for the rest of its net position;
+        # Fed: open-market operations to hold reserves at target; the discount window covers what bills cannot
+        GDP_a_ = sum(self.GDP_hist[-4:])
+        self.Bills = max(mp.tga_target * GDP_a_ - self.g, 0.0)
+        self.TGA = self.g + self.Bills
+        self.SOMA = float(np.clip(mp.res_target * GDP_a_ + self.TGA, 0.0, self.Bills))
+        self.DW = max(self.TGA - self.SOMA, 0.0)
+        self.R_res = self.SOMA + self.DW - self.TGA
         self.t += 1
         if not record:
             return None
