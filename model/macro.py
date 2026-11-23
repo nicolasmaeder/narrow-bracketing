@@ -158,6 +158,7 @@ class MParams:
         self.piece_own_market = True   # output-paying firms compare their pay with other output-paying firms
         self.commission = 0.0       # > 0: output-paying firms pay this share of the value of output per unit of effective labor
                                     # (commission contract, like the JMP's capital sector paying the value of output); quarterly
+        self.pay_hiring = True      # pay review prices the hiring the firm plans (demand-dependent pay)
         self.vshock_rho = 0.95      # persistence of an asset-value shock
         self.exo_ramp = 0           # diagnostic: quarters over which exogenous growth ramps up
         self.exo_g = 0.0            # diagnostic: exogenous labor-augmenting growth per quarter instead of ideas
@@ -212,6 +213,7 @@ class Macro:
         self.qbar = np.full(F, self.zbar)                              # each firm's average worker quality (observed)
         self._rev_pe = np.full(F, P0 * y0 / L0)
         zw = np.sort(self.z[self.age < self.hp.J_W]); self._zpub = zw[:: max(1, len(zw) // 400)]   # published skill distribution
+        self.gL_plan = np.zeros(F)               # firm's planned net workforce growth per quarter
         self.vshock = 1.0                        # asset-value shock multiplier (experiments)
         self.r_lr_f = np.full(F, mp.i_star + 0.005)   # firm's long-run cost of funds (discounted average of its own)
         self.turn = np.full(F, 0.05)             # belief: rate at which the firm's technique is superseded (own record)
@@ -600,13 +602,26 @@ class Macro:
         R = mp.kappa_h * T * H * (H / Lb) ** mp.psi_h
         return H, R, L_flow
 
-    def pay_review(self, We, a, Q, r, We_piece=None):
+    def pay_review(self, We, a, Q, r, We_piece=None, gL=None):
         """Annual pay review (Salop turnover model): the relative pay that minimizes cost per worker,
             min over x:  x We [1 + (r + sep + Q x^-eta) c_v / min(1, a x^eta)],
         with We the market pay expected over the coming year (last observed x last year's market growth). The
         answer does not depend on the firm's sales: those set how many it hires, not what it pays."""
         xg = np.linspace(0.7, 1.4, 281)[None, :]
-        c = self.full_cost(xg, np.asarray(We)[:, None] if np.ndim(We) else We, a[:, None], Q[:, None], r[:, None])
+        mp, hp = self.mp, self.hp
+        if mp.pay_hiring and gL is not None:
+            # cost per worker per quarter given the hiring the firm plans: pay plus the recruiting time needed for the
+            # hires it will make, h = planned net growth + departures (quits fall with relative pay), at the convex
+            # recruiting cost kappa T h^(1+psi), T falling with relative pay (openings fill faster). A firm planning to
+            # shrink faster than workers leave makes no hires, so pay buys it nothing: it would like to cut, which
+            # incumbents' effort does not allow (Bewley; Akerlof and Yellen)
+            Wv = np.asarray(We)[:, None] if np.ndim(We) else We
+            dep = hp.sep + Q[:, None] * xg ** (-mp.eta_L)
+            h = np.maximum(0.0, gL[:, None] + dep)
+            T = mp.q_ref / np.minimum(1.0, np.maximum(a[:, None], 1e-3) * xg ** mp.eta_L)
+            c = xg * Wv * (1 + mp.kappa_h * T * h ** (1 + mp.psi_h))
+        else:
+            c = self.full_cost(xg, np.asarray(We)[:, None] if np.ndim(We) else We, a[:, None], Q[:, None], r[:, None])
         if self.mp.weiss and We_piece is not None:
             # pooled firms: cost per unit of effective labor = cost per head / average quality attracted (Weiss)
             We_pool = float(np.mean(np.asarray(We)[~self.piece])) if np.ndim(We) else We
@@ -742,6 +757,7 @@ class Macro:
             cum_in = cz - base[f_o]
             laid = (cum_in - z[order]) >= L_star[f_o] + 1e-12
             job[order[laid]] = -1
+            self._laid_z = float(z[order[laid]].sum())
         L_now = np.bincount(job[job >= 0], z[job >= 0], F)
         if hires is not None:                                         # hires the firm wants; openings implied at the believed fill rate
             V = np.minimum(hires, np.maximum(0.0, L_target - L_now) + 1e-12); vac = V / max(self.q_bel, 0.05)
@@ -907,7 +923,7 @@ class Macro:
                     We_piece = self.Wbar_obs(self.piece) * (1 + g_mkt) ** 2.5
                     if mp.piece_own_market:                   # output-paying firms benchmark against each other only
                         We = np.where(self.piece, self.Wbar_obs(self.piece), self.Wbar_obs()) * (1 + g_mkt)
-                w_des = self.pay_review(We * (1 + g_mkt) ** 1.5, qf, Q, r_own, We_piece)
+                w_des = self.pay_review(We * (1 + g_mkt) ** 1.5, qf, Q, r_own, We_piece, self.gL_plan)
                 self._cut_wanted = w_des < self.w                      # the firm would cut pay if workers accepted it
                 w_post = np.maximum(self.w, w_des)                     # no nominal cuts
                 if mp.weiss and mp.commission > 0:
@@ -944,6 +960,8 @@ class Macro:
                         lo_ = np.where(pos_, mid_, lo_); hi_ = np.where(pos_, hi_, mid_)
                     L_keep = 0.5 * (lo_ + hi_)
                     L_tgt = stay + H_want
+                    # planned net growth of the workforce (discounted average), used at the next pay review
+                    self.gL_plan = 0.75 * self.gL_plan + 0.25 * np.clip(np.minimum(L_tgt, L_keep) / np.maximum(L_prev, 1e-9) - 1, -0.5, 0.5)   # incl. planned layoffs
             else:
                 self.p, S, mu_s, v = self.price_and_stock(w_post, r_own)
                 S = np.minimum(S, self.inv + self.prod(L_cap))
