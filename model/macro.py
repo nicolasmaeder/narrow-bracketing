@@ -43,6 +43,8 @@ class MParams:
         self.eps = 7.7              # buyers' elasticity of substitution across firms (logit choice)
         self.taste_sd = 0.10        # buyers' idiosyncratic taste shocks across firms (sd of log weight)
         self.inv_decay = 0.03       # inventory carrying loss per quarter (spoilage, obsolescence)
+        self.inv_decay_sv = 0.9     # services: perishable
+        self.mrp_stock = True       # a hire's output adds to the stock carried in (not to zero stock)
         self.phi_K = 2.0            # convex capital adjustment cost (x P K x (dK/K)^2 / 2)
         self.g_A = 0.10             # firms' forgetting rate on own-demand evidence (level)
         self.g_sig = 0.05           # forgetting rate on own forecast errors (noise)
@@ -164,6 +166,11 @@ class MParams:
         # kaitz times the published median earnings of employed workers (indexed state minimums; Kaitz index 0.37-0.59
         # across states, 0.28 for the federal minimum alone)
         self.x_lo, self.x_hi = 0.7, 1.4   # range of relative pay a pay review considers
+        # two sectors: services (sold only to households, produced by pooled-pay firms: output per worker is hard to
+        # measure, pay is posted per head) and goods (bought by households and as investment, produced by firms that
+        # pay by measured output). Households spend a share s_sv of consumption on services (Cobb-Douglas upper tier)
+        self.services = False
+        self.s_sv = 0.25
         self.min_wage = False
         self.kaitz = 0.45
         self.mw_review = 4
@@ -246,6 +253,10 @@ class Macro:
         self.wp_lr = np.full(F, 1.0 / P0)        # firm's long-run real wage (discounted average)
         self.s_lr = np.full(F, y0)               # firm's normal sales (discounted average of its own)
         self.piece = (np.arange(F) < mp.n_piece) if mp.weiss else np.zeros(F, bool)
+        self.sec = ((~self.piece) if (mp.services and mp.weiss) else np.zeros(F, bool)).astype(int)   # 1 = services
+        self.n_sec = np.bincount(self.sec, minlength=2).astype(float)
+        # services cannot be stored: unsold service capacity is mostly lost (decay inv_decay_sv)
+        self.decay = np.where(self.sec == 1, mp.inv_decay_sv, mp.inv_decay)
         self.zbar = float(self.z[self.age < self.hp.J_W].mean())      # published average skill of the labor force
         self.W_min = 0.0                                            # minimum earnings per worker (0: none yet)
         self.med_earn = None                                         # published median earnings of the employed
@@ -264,6 +275,9 @@ class Macro:
         # the market (published final sales, extrapolated at their published growth). The position is stationary even
         # when the economy grows.
         self.ln_a = np.full(F, np.log(1.0 / F))  # belief: log of demand at relative price 1 per unit of real final sales
+        if mp.services and mp.weiss:                # start at the sector's share of final sales split evenly
+            sh0 = np.where(self.sec == 1, 0.8 * mp.s_sv, 1 - 0.8 * mp.s_sv) / self.n_sec[self.sec]
+            self.ln_a = np.log(sh0)
         self.S_last = P0 * F * y0                 # last published nominal final sales
         self.gS = mp.pi_star + (mp.g_N / mp.pL if mp.tech else 0.0)   # published growth of nominal final sales (discounted average)
         self.sig2 = np.full(F, mp.taste_sd ** 2)  # belief: variance of log demand surprises
@@ -272,9 +286,10 @@ class Macro:
         self.Kb = np.full(F, P0 * K0)            # book value of capital (historical cost)
         self.m = np.zeros(F)
         self.p = np.full(F, P0)
-        self.share_prev = np.full(F, 1 / F)
+        self.share_prev = 1.0 / self.n_sec[self.sec]
         self.share_prev_used = self.share_prev.copy()
-        self.cust = np.full(F, 1 / F)                 # customer base (share of buyers who buy from the firm)
+        self.cust = 1.0 / self.n_sec[self.sec]           # customer base (share of its sector's buyers who buy from the firm)
+        self._Ssec = np.zeros(F)                       # spending on the firm's sector last quarter
         self._Stot = 0.0
         self.lam_sh = np.ones(F)
         self.sh_m = np.zeros((4, F))
@@ -329,6 +344,7 @@ class Macro:
         self.pi_e = mp.pi_star
         self.u_prev = mp.u_star
         self.P_prev = P0
+        self.P_prev_sec = np.array([P0, P0], float)     # published price index of each sector (goods, services)
         GDP0 = P0 * F * y0
         self.GDP_hist = [GDP0] * 4
         self.budget_prev = None                 # last quarter's (spending net of estates, wage bill)
@@ -515,11 +531,13 @@ class Macro:
         xi lognormal with mean 1. C is the labor cost of producing with current capital; v is the value of a
         unit carried into next quarter (replacement cost net of spoilage, discounted at the loan rate)."""
         mp = self.mp; a_, Z, F = mp.alpha, mp.Z, mp.F
-        Pref = self.P_ref()
+        Pref = self.P_ref_sec()                               # competitors' prices: the firm's sector index
         self.Pref_used = Pref
+        self.Pref_all_used = self.P_ref()
+        Prc = Pref[:, None] if np.ndim(Pref) else Pref
         e_f = self.elast(short=True)                          # own-price elasticity buyers' choices imply (this quarter)
         sig = np.sqrt(self.sig2)
-        uc = self.unit_cost(W, Pref * (rL + mp.delta))       # rL here is the firm's own marginal cost of funds (array)
+        uc = self.unit_cost(W, self.Pref_all_used * (rL + mp.delta))       # rL here is the firm's own marginal cost of funds (array)
         if mp.v_marginal:
             # a unit left unsold is worth what replacing it next quarter would cost: the marginal cost of producing
             # it at the firm's normal output (expected sales) with the firm's internal cost of labor, net of spoilage,
@@ -527,9 +545,9 @@ class Macro:
             Wi = np.broadcast_to(np.asarray(W if W_int is None else W_int, float), (F,))
             y_n = np.exp(self.lnA)
             mc_n = self.mc_y(Wi, y_n)
-            v = (1 - mp.inv_decay) * mc_n / (1 + rL)
+            v = (1 - self.decay) * mc_n / (1 + rL)
         else:
-            v = (1 - mp.inv_decay) * uc / (1 + rL)
+            v = (1 - self.decay) * uc / (1 + rL)
         Wc = np.broadcast_to(np.asarray(W, float), (F,))[:, None]   # each firm's own wage
         C = lambda y: Wc * self.L_need(y)
         Cp = lambda y: self.mc_y(Wc, y)
@@ -538,7 +556,7 @@ class Macro:
         s_ = sig[:, None]
 
         def solve(p):
-            mu = A * (p / Pref) ** (-e_f[:, None])
+            mu = A * (p / Prc) ** (-e_f[:, None])
             lo = n + 0 * p
             hi = n + 3 * mu * np.exp(4 * s_)
             for _ in range(50):                               # FOC in S: p Pr(D>S) + v Pr(D<S) = C'(S - n)
@@ -558,17 +576,17 @@ class Macro:
                 # over the expected life of the relationship (static beliefs), CLV = Stot (1 - mc/p) / (r + rho)
                 sh = self.cust[:, None]
                 lam = self.lam_sh[:, None] if mp.share_learn else 1.0
-                Lp = sh * (p / Pref) ** (-lam * mp.eps * (1 - sh))
-                mc = v[:, None] * (1 + rL[:, None] if np.ndim(rL) else 1 + rL) / (1 - mp.inv_decay)
+                Lp = sh * (p / Prc) ** (-lam * mp.eps * (1 - sh))
+                mc = v[:, None] * (1 + rL[:, None] if np.ndim(rL) else 1 + rL) / (1 - self.decay)[:, None]
                 if mp.clv_lr:
                     # a customer is a lasting flow of orders that needs capacity built for it: its margin is over the
                     # long-run unit cost (labor and the user cost of capital), not this quarter's marginal cost
                     mc = np.maximum(mc, uc[:, None])
-                clv = self._Stot * np.maximum(1 - mc / p, 0.0) / ((rL[:, None] if np.ndim(rL) else rL) + mp.rho_c)
+                clv = self._Ssec[:, None] * np.maximum(1 - mc / p, 0.0) / ((rL[:, None] if np.ndim(rL) else rL) + mp.rho_c)
                 served = np.minimum(1.0, Emin / np.maximum(mu, 1e-12))      # share of demand it expects to serve
                 # customers are worth their margin only up to what the firm can serve: buyers beyond its stock on
                 # hand add nothing (they find it sold out), so a firm that is sold out gains nothing by cutting its price
-                sh_cap = S * p / max(self._Stot, 1e-12)               # spending share the stock on hand can serve
+                sh_cap = S * p / np.maximum(self._Ssec[:, None], 1e-12)   # spending share the stock on hand can serve
                 won = np.minimum(mp.rho_c * Lp, np.maximum(sh_cap - (1 - mp.rho_c) * sh, 0.0))
                 val = val + won * clv - mp.stockout_loss * (1 - served) * sh * clv
             return S, mu, val
@@ -582,6 +600,7 @@ class Macro:
         k2 = val2.argmax(1)
         idx = np.arange(F)
         p_o, S_o, mu_o = p2[idx, k2], S2[idx, k2], mu2[idx, k2]
+        self._v_inv = np.broadcast_to(np.asarray(v, float), (F,)).copy()   # value of a unit carried forward
         if plan:
             return p_o, S_o, mu_o, v
         if self.mp.menu_cost > 0 and getattr(self, "_p_old", None) is not None:
@@ -712,10 +731,20 @@ class Macro:
         e_f = self.elast(short=not mp.hire_long)
         # marginal revenue product along the firm's own demand belief: selling more output y means a lower price,
         # p(y) = p (y / mu)^(-1/e), and marginal revenue p(y) (1 - 1/e)
+        # newsvendor value of a marginal unit: output joins the stock the firm expects to carry in; a unit is sold
+        # (at marginal revenue) if demand exceeds the stock, and otherwise carried forward at its inventory value v
+        carry0 = np.maximum(self.inv - mu, 0.0) * (1 - self.decay) if mp.mrp_stock else 0.0
+        v_inv = getattr(self, "_v_inv", None)
+        sd_d = np.sqrt(self.sig2)
         def mrp(L):
             L = np.maximum(L, 1e-9)
             y = self.prod(L)
-            val = p * (y / mu) ** (-1 / e_f) * (1 - 1 / e_f) * self.mpl(L)
+            mr = p * (y / mu) ** (-1 / e_f) * (1 - 1 / e_f)
+            if mp.mrp_stock and v_inv is not None:
+                Stk = y + carry0
+                pr_sell = ndtr((np.log(mu / np.maximum(Stk, 1e-12)) - sd_d ** 2 / 2) / sd_d)
+                mr = mr * pr_sell + v_inv * (1 - pr_sell)
+            val = mr * self.mpl(L)
             if getattr(self, "_ell", None) is not None:      # net of the wear on machines the worker's output needs
                 val = val - np.where(L <= self._ell * self._ycap, self._cs * self._kx / self._ell, 0.0)
             return val
@@ -827,6 +856,13 @@ class Macro:
     def P_ref(self):
         """Firms' expected price index this quarter: last observed x (1 + believed inflation)."""
         return self.P_prev * (1 + self.anchored(self.pi_e)) if self.mp.wage_posting else self.P_prev
+
+    def P_ref_sec(self):
+        """Expected price index of each firm's own sector (its competitors' prices): the published sector index x
+        (1 + believed inflation). Without separate sectors, the overall index."""
+        if not (self.mp.services and self.mp.weiss):
+            return self.P_ref()
+        return self.P_prev_sec[self.sec] * (1 + self.anchored(self.pi_e))
 
     # ------------------------------------------------------------------ labor market with posted wages
     def earn_fac(self, job, z=None):
@@ -1172,7 +1208,7 @@ class Macro:
             self._mu_lag, self._inv_lag = mu_s.copy(), self.inv.copy()
             d2 = (np.log(mu_s / np.maximum(self.inv, 1e-12)) - sd ** 2 / 2) / sd
             Esales = mu_s - (mu_s * ndtr(d2 + sd) - self.inv * ndtr(d2))
-            carry = np.maximum(self.inv - Esales, 0.0) * (1 - mp.inv_decay)
+            carry = np.maximum(self.inv - Esales, 0.0) * (1 - self.decay)
             if mp.wage_posting and mp.vacancies and mp.hiring == "convex":
                 # production is planned at the marginal cost of the labor that makes it, the same cost the hiring
                 # decision uses: the wage, plus (if the firm is adding workers) the marginal hiring cost spread over
@@ -1339,13 +1375,20 @@ class Macro:
         S_h = P * c
         S_I = P * I_plan
         S_tot = S_h.sum() + S_I.sum()
+        sec, nsec = self.sec, 2
+        if mp.services and mp.weiss:
+            S_sec = np.array([(1 - mp.s_sv) * S_h.sum() + S_I.sum(), mp.s_sv * S_h.sum()])
+        else:
+            S_sec = np.array([S_tot, 0.0])
+        Ssec_f = S_sec[sec]
+        secsum = lambda x: np.bincount(sec, x, minlength=nsec)[sec]  # sum over the firm's sector
         avail = self.inv.copy() if mp.prod_lag else self.inv + y
         # buyers choose among firms by random utility (logit): shares proportional to (p/P)^(-eps) x taste
         wts = (self.p / P) ** (-mp.eps) * np.exp(mp.taste_sd * self.rng.standard_normal(F))
         if mp.rho_c < 1:
             # customer market: a share rho_c of buyers shop around (logit); the rest stay with their seller
             cust_old = self.cust.copy()
-            self.cust = (1 - mp.rho_c) * self.cust + mp.rho_c * wts / wts.sum()
+            self.cust = (1 - mp.rho_c) * self.cust + mp.rho_c * wts / secsum(wts)
             if mp.share_learn:
                 # what the firm sees: its price relative to the index it expected, and the change in its customer
                 # share; the logit slope with rivals' prices as expected predicts z; the firm estimates how much of
@@ -1358,23 +1401,32 @@ class Macro:
                 vz = np.maximum(szz - mz * mz, 0.0); cz = szy - mz * my
                 w0 = mp.w_sh * self.sh_v0
                 self.lam_sh = np.clip((w0 + cz) / (w0 + vz), 0.0, 1.5)
-            q_dem = self.cust * S_tot / self.p
+            q_dem = self.cust * Ssec_f / self.p
         else:
-            q_dem = (wts / wts.sum()) * S_tot / self.p
+            q_dem = (wts / secsum(wts)) * Ssec_f / self.p
         self._Stot = S_tot
+        self._Ssec = Ssec_f.copy()
         sold = np.minimum(q_dem, avail)
         spare = avail - sold
-        unmet = ((q_dem - sold) * self.p).sum()
-        if unmet > 0 and spare.sum() > 0:                     # one pass of spillover to firms with stock left
-            sh2 = spare * self.p / (spare * self.p).sum()
-            sold = sold + np.minimum(sh2 * unmet / self.p, spare)
+        unmet = secsum((q_dem - sold) * self.p)
+        spv = secsum(spare * self.p)
+        sh2 = np.where(spv > 0, spare * self.p / np.maximum(spv, 1e-300), 0.0)   # one pass of spillover within the sector
+        sold = sold + np.minimum(sh2 * unmet / self.p, spare)
         revenue = sold * self.p
         spent = revenue.sum()
         fill = spent / max(S_tot, 1e-12)
+        rev_s = np.bincount(sec, revenue, minlength=nsec); q_s = np.bincount(sec, sold, minlength=nsec)
+        fill_s = np.where(S_sec > 0, rev_s / np.maximum(S_sec, 1e-12), 1.0)
+        Pp_s = np.where(q_s > 0, rev_s / np.maximum(q_s, 1e-12), 1.0)
+        if mp.services and mp.weiss:
+            fill_g, fill_h = fill_s[0], (1 - mp.s_sv) * fill_s[0] + mp.s_sv * fill_s[1]
+            c_real = S_h * ((1 - mp.s_sv) * fill_s[0] / Pp_s[0] + mp.s_sv * fill_s[1] / Pp_s[1])
+        else:
+            fill_g = fill_h = fill
+            c_real = S_h * fill / Pp_s[0]
         P_paid = spent / max(sold.sum(), 1e-12)
-        c_real = S_h * fill / P_paid
-        I_real = S_I * fill / P_paid
-        self.m += revenue - S_I * fill
+        I_real = S_I * fill_g / Pp_s[0]
+        self.m += revenue - S_I * fill_g
         S_I_f = P * I_plan
         if getattr(self, "_ell", None) is not None:          # depreciation rises with utilization
             u_f = np.clip(self._kx * self._yprod / np.maximum(self.K, 1e-12), 0.0, mp.u_max)
@@ -1389,7 +1441,7 @@ class Macro:
             ph = I_real / np.maximum(self.K, 1e-12)
             self.AK = np.exp((1 - ph) * np.log(self.AK) + ph * np.log(self.AKn))
             self.AL = np.exp((1 - ph) * np.log(self.AL) + ph * np.log(self.ALn))
-        self.inv = (avail - sold) * (1 - mp.inv_decay) + (y if mp.prod_lag else 0.0)
+        self.inv = (avail - sold) * (1 - self.decay) + (y if mp.prod_lag else 0.0)
         if getattr(self, "trace_on", False) and mp.vacancies:
             self.trace[-1].update(sold=float(sold[0]), dem=float(q_dem[0]), avail=float(avail[0]))
         self._qd, self._sold, self._avail = q_dem.copy(), sold.copy(), avail.copy()
@@ -1401,17 +1453,17 @@ class Macro:
             # customers who found the firm sold out leave with probability stockout_loss and re-shop next quarter
             unserved = np.maximum(q_dem - np.minimum(q_dem, avail), 0.0) / np.maximum(q_dem, 1e-12)
             lost = mp.stockout_loss * unserved * self.cust
-            self.cust = self.cust - lost + lost.sum() * wts / wts.sum()
+            self.cust = self.cust - lost + secsum(lost) * wts / secsum(wts)
         self.share_prev_used = self.share_prev
-        self.share_prev = revenue / max(spent, 1e-12)
+        self.share_prev = revenue / np.maximum(secsum(revenue), 1e-12)   # share of its sector
 
         # 7. settlement
-        db = db + S_h * (1 - fill)                            # unspent cash stays in the buffer
+        db = db + S_h * (1 - fill_h)                            # unspent cash stays in the buffer
         if mp.fund:
             if mp.two_accounts:
                 # checking pays nothing; savings pay rb. Baumol-Tobin: the checking balance that minimizes transfer
                 # costs plus forgone interest is sqrt(cost x spending / (2 rb)); at rb = 0 everything sits in checking
-                spend = np.maximum(S_h * fill, 1e-12)
+                spend = np.maximum(S_h * fill_h, 1e-12)
                 self._spend_last = spend
                 M_chk = np.minimum(db, np.sqrt(mp.c_tr * self.yhat * spend / (2 * max(rb, 1e-9)))) if rb > 0 else db
                 sav = np.maximum(db - M_chk, 0.0)
@@ -1443,7 +1495,7 @@ class Macro:
         # owners are paid the quarter's accounting profit (book depreciation at historical cost); remaining cash
         # repays loans, since holding deposits at rb while owing at rL loses money
         profit = revenue - wb_f - int_f + m_int - self._dep * self.Kb
-        self.Kb = (1 - self._dep) * self.Kb + S_I_f * fill
+        self.Kb = (1 - self._dep) * self.Kb + S_I_f * fill_g
         div_f = np.clip(profit, 0.0, np.maximum(self.m, 0.0))
         self.m -= div_f
         self.Ehat = (1 - mp.g_earn) * self.Ehat + mp.g_earn * profit
@@ -1549,13 +1601,13 @@ class Macro:
             obs = np.where(out, pred + sd * mills, np.log(np.maximum(sold, 1e-12)))
             err = obs - pred
             self.lnA += mp.g_A * err
-            self.ln_a += mp.g_A * (obs + e_f * np.log(self.p / self.Pref_used) - np.log(S_tot / self.Pref_used) - self.ln_a)
+            self.ln_a += mp.g_A * (obs + e_f * np.log(self.p / self.Pref_used) - np.log(S_tot / self.Pref_all_used) - self.ln_a)
             self.sig2 = np.where(out, self.sig2, np.maximum((1 - mp.g_sig) * self.sig2 + mp.g_sig * err ** 2, 1e-4))
         else:
             err = np.log(np.maximum(q_dem, 1e-12)) + e_f * np.log(self.p / self.Pref_used) - self.lnA
             self.lnA += mp.g_A * err
             # own position: the part of the surprise not explained by the size of the market (published afterwards)
-            err_a = np.log(np.maximum(q_dem, 1e-12)) + e_f * np.log(self.p / self.Pref_used) - np.log(S_tot / self.Pref_used) - self.ln_a
+            err_a = np.log(np.maximum(q_dem, 1e-12)) + e_f * np.log(self.p / self.Pref_used) - np.log(S_tot / self.Pref_all_used) - self.ln_a
             self.ln_a += mp.g_A * err_a
             self.sig2 = np.maximum((1 - mp.g_sig) * self.sig2 + mp.g_sig * err ** 2, 1e-4)
         # published real growth of final sales (a national-accounts statistic); firms expect their own demand to grow
@@ -1594,6 +1646,7 @@ class Macro:
         self.yhat[dead] = self.W * self.z[dead]
         uc_rec = float(np.mean(self.unit_cost(W, self.P_prev * (r_own + mp.delta))))
         self.P_prev = P_paid
+        self.P_prev_sec = np.where(q_s > 0, Pp_s, P_paid)
         GDP = spent                                           # final sales (consumption + investment), nominal
         self.GDP_hist.append(GDP)
         self.t += 1
@@ -1604,7 +1657,7 @@ class Macro:
                     K=self.K.sum(), loans=self.loan.sum(), debt=-self.g, E_B=self.E_B, B=self.b.sum(),
                     A=self.a.sum(), M_f=self.m.sum(), defaults=int((loss > 0).sum()), loss_rate=loss_rate,
                     reserves=self.reserves() - self.R0, theta=self.theta, chk_share=getattr(self, "_chk_share", 1.0), price_changes=float(np.mean(np.abs(self.p / self._p_old - 1) > 1e-9)) if getattr(self, "_p_old", None) is not None else 1.0, vac=float(self.vac_last) if mp.wage_posting else 0.0, contact=float(self.c_rate_last), y=y.sum(), Ld_pre=Ld_pre, div=div_f.sum() + div_B, profit_share=(div_f.sum()) / max(GDP, 1e-12),
-                    wage_share=wb_f.sum() / max(GDP, 1e-12), wage_disp=float(np.std(np.log(W_firm * np.ones(F)))), spend_h=S_h.sum() * fill, contrib=da[da > 0].sum(),
+                    wage_share=wb_f.sum() / max(GDP, 1e-12), wage_disp=float(np.std(np.log(W_firm * np.ones(F)))), spend_h=S_h.sum() * fill_h, contrib=da[da > 0].sum(),
                     withdraw=-da[da < 0].sum(), kappa_mean=float(self.kappa[work].mean()),
                     markup=float(np.mean(self.p)) / uc_rec,
                     inv_sales=self.inv.sum() / max(sold.sum(), 1e-12), sig=float(np.sqrt(self.sig2).mean()),
