@@ -24,6 +24,20 @@ Code for a macro model that is computed one quarter at a time. Every agent decid
 
 `model/DECISIONS.md` lists every decision, its objective and its information. `model/check_principles.py` checks the accounting (reserves stay at zero to about 1e-15 of deposits) and that a quarter depends only on the state.
 
+**Current model (Nov 23).** The default economy now has:
+- **Two sectors.** Goods are bought by households and as investment and made by 14 firms that pay by measured output. Services take 25% of household spending, are made by 6 firms that post one wage per head (output per worker is hard to measure), are produced to order within the quarter, and cannot be stored. Pooled service pay is benchmarked on the workers' outside option (what workers of the firm's average skill would earn paid by output), so service jobs are the low-wage jobs (Weiss adverse selection operates there).
+- **Participation.** A working-age person without a job searches if UI (paid only to searchers, for two quarters after a job loss) plus the published job-finding rate x a quarter's earnings covers a personal search cost; measured unemployment counts searchers only (CPS). About 96.5% of working-age people are in the labor force.
+- **Labor flows at US rates.** Separations 5.5% a quarter; most separated workers find a job within the quarter.
+- **A realistic policy rule.** Smoothing 0.85, 1.5 on inflation, 0.25 a quarter on the unemployment gap (Taylor 1993 via Okun). The neutral-rate estimate is revised slowly when inflation keeps missing.
+- **Newsvendor value of a worker's output.** Output is sold if demand exceeds the stock and otherwise carried at its inventory value, so goods firms hoard labor and perishable services do not.
+- **Sector price indexes.** Firms benchmark prices against their own sector's published index; machines are valued at the goods index.
+
+Long run (4 seeds, menu cost 0.035 and fixed neutral rate; inflation is 2.1-2.2% with neutral-rate learning): unemployment 4.7-5.6%, inflation 1.4-1.5%, growth about 1.9%, price over marginal cost 1.58, wage share 0.45, K/Y 1.2, wealth/GDP 7.0. Earnings: p90/p50 = 2.0 (data about 2), p10/p50 = 0.8 (data about 0.5), pooled service pay 0.82 x the median.
+
+20% asset bust (16 seeds, common random numbers): unemployment +4.5 points at quarter 8, back to baseline by quarter 16; output -2.8% at its trough; investment -9%; policy rate cut about 4 points; price level -10% (still too much deflation; core prices fell about 4% relative to trend in 2008-11).
+
+Options built but off: household credit lines (`cred_lim`, with charge-offs; debt too low and unemployment higher, needs calibration), minimum wage (`min_wage`, does not bind while service pay is 0.82 x the median), firm-specific efficiency (`firm_eff`; with 20 firms idiosyncratic shocks become aggregate), variable utilization.
+
 Calibration pass (Nov 22): hiring cost about half a quarter's wage per hire (Blatter et al.); six application rounds a quarter; price-adjustment cost calibrated to the frequency of price changes (about 35-40% a quarter, as in Golosov-Lucas and Nakamura-Steinsson); Jorgenson user cost; production planned at next quarter's planned price; firms' expected inflation half anchored on the target, slow to move. Long run (4 seeds): unemployment about 2.7-4%, inflation 2.0%, growth 2%, price over marginal cost 1.42, wage share 0.48, K/Y 1.3, wealth/GDP 6.3. In a 20% asset-value bust the no-cut rule binds for about half of the firms reviewing pay; but prices still fall too much (about 14% over four years against roughly 4% for core prices in 2008-11), investment rises, and output barely falls.
 
 Since the last version:

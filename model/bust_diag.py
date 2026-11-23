@@ -5,10 +5,13 @@ from run_macro import build
 H=60
 KW=json.loads(sys.argv[1]) if len(sys.argv)>1 else {}
 SIZE=float(sys.argv[2]) if len(sys.argv)>2 else 0.3
+SHOCK=__import__('os').environ.get('SHOCK','asset')
 def run(seed):
     m=build(seed=seed, **KW)
     for t in range(400): m.step()
-    m._mrp=None; a,b=copy.deepcopy(m),copy.deepcopy(m); b.vshock=1-SIZE
+    m._mrp=None; a,b=copy.deepcopy(m),copy.deepcopy(m)
+    if SHOCK=='credit': b.cred_shock=SIZE          # banks cut credit lines by SIZE (decays at cred_shock_rho)
+    else: b.vshock=1-SIZE                           # asset values fall by SIZE
     A=[];B=[];tA=[];tB=[]
     for _ in range(H):
         A.append(a.step()); B.append(b.step())

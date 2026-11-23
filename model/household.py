@@ -52,6 +52,9 @@ class Params:
                                         # is in units of own income, so it is homothetic and admits balanced growth
                                         # (King, Plosser and Rebelo); with c_rel False, u(c) and real growth would make
                                         # the buffer a luxury good
+        self.cred_lim = 0.0     # credit line, quarters of reference income (credit cards, HELOCs): the buffer may go to
+                                # -cred_lim x yhat; debt pays the borrowing rate. With a credit line the buffer is valued
+                                # as v(x + cred_lim/beta), so cash and unused credit are both liquidity
         self.seed = 0
         self.__dict__.update(kw)
         self.J = self.J_W + self.J_R
@@ -73,20 +76,32 @@ def crra(x, s):
     return np.log(x) if s == 1 else x ** (1 - s) / (1 - s)
 
 
-def solve(m, a, yhat, G, P, rb, ra, p: Params, choose_a: bool, a_lb=None, b_lb=0.0, n_iter=70):
+def solve(m, a, yhat, G, P, rb, ra, p: Params, choose_a: bool, a_lb=None, b_lb=0.0, n_iter=70, r_c=None, lim=None):
     """Static problem for a vector of households, by bisection on the multiplier mu (log).
     m: cash on hand net of any fixed retirement flow; a: retirement balance; choose_a: whether d_a is chosen;
     b_lb: lower bound on the buffer deposit. Returns c, d_b, d_a, utility."""
     s = p.sigma
     sB = p.sigma if p.sigma_B is None else p.sigma_B
+    lim = p.cred_lim if lim is None else lim
+    credit = (r_c is not None) and np.any(np.asarray(lim) > 0)
+    epsB = (p.eps_B + np.asarray(lim) / p.beta) if credit else p.eps_B
+    if credit:
+        # the line can be drawn (up to what is repayable within it next quarter) when the buffer may be drawn at all
+        fl = -np.asarray(lim) * yhat / (1 + r_c)
+        b_lb = np.maximum(np.where(np.asarray(b_lb) <= 0, np.minimum(b_lb, fl), b_lb), fl)   # never beyond the line
     lo = np.full(m.shape, -40.0)
     hi = np.full(m.shape, 40.0)
 
     def spend(lmu):
         mu = np.exp(lmu)
         c = (yhat / P) * (mu * yhat) ** (-1 / s) if p.c_rel else (mu * P) ** (-1 / s)
-        xb = (p.psi_B * (1 + rb) / (mu * yhat)) ** (1 / sB) - p.eps_B
-        db = np.maximum(xb * p.beta * yhat / (1 + rb), b_lb)
+        xb = (p.psi_B * (1 + rb) / (mu * yhat)) ** (1 / sB) - epsB
+        db = xb * p.beta * yhat / (1 + rb)
+        if credit:                                  # kinked rate: debt costs r_c
+            xc = (p.psi_B * (1 + r_c) / (mu * yhat)) ** (1 / sB) - epsB
+            dc = xc * p.beta * yhat / (1 + r_c)
+            db = np.where(db >= 0, db, np.minimum(dc, 0.0))
+        db = np.maximum(db, b_lb)
         if choose_a:
             xa = (p.psi_A * (1 + ra) / (mu * yhat)) ** (1 / s)
             da = np.maximum(xa * G * yhat / (1 + ra) - a, a_lb)
@@ -101,23 +116,24 @@ def solve(m, a, yhat, G, P, rb, ra, p: Params, choose_a: bool, a_lb=None, b_lb=0
         lo = np.where(over, mid, lo)
         hi = np.where(over, hi, mid)
     c, db, da, _ = spend(0.5 * (lo + hi))
-    xb = (1 + rb) * db / (p.beta * yhat)
-    U = (crra(P * c / yhat, s) if p.c_rel else crra(c, s)) + p.psi_B * p.beta * crra(xb + p.eps_B, sB)
+    rr = np.where(db >= 0, rb, r_c) if credit else rb
+    xb = (1 + rr) * db / (p.beta * yhat)
+    U = (crra(P * c / yhat, s) if p.c_rel else crra(c, s)) + p.psi_B * p.beta * crra(np.maximum(xb + epsB, 1e-12), sB)
     if choose_a:
         xa = (1 + ra) * (a + da) / (G * yhat)
         U = U + p.psi_A * G * crra(np.maximum(xa, 1e-12), s)
     return c, db, da, U
 
 
-def solve_accounts(m, b, a, yhat, G, P, rb, ra, p: Params, choose_a: bool, a_lb=None, add_a_term=0.0):
+def solve_accounts(m, b, a, yhat, G, P, rb, ra, p: Params, choose_a: bool, a_lb=None, add_a_term=0.0, r_c=None, lim=None):
     """Shefrin-Thaler mental accounts: spending out of this quarter's income is free, but drawing the
     buffer below its starting balance b ('invading the asset account') carries a fixed entry cost,
     p.entry_cost x u'(c) c. The household compares not invading (d_b >= b) with invading and paying."""
     if p.entry_cost <= 0:
-        out = solve(m, a, yhat, G, P, rb, ra, p, choose_a, a_lb=a_lb)
+        out = solve(m, a, yhat, G, P, rb, ra, p, choose_a, a_lb=a_lb, r_c=r_c, lim=lim)
         return out[0], out[1], out[2], out[3] + add_a_term, np.zeros(m.shape, bool)
-    cN, bN, dN, UN = solve(m, a, yhat, G, P, rb, ra, p, choose_a, a_lb=a_lb, b_lb=b)
-    cI, bI, dI, UI = solve(m, a, yhat, G, P, rb, ra, p, choose_a, a_lb=a_lb, b_lb=0.0)
+    cN, bN, dN, UN = solve(m, a, yhat, G, P, rb, ra, p, choose_a, a_lb=a_lb, b_lb=b, r_c=r_c, lim=lim)
+    cI, bI, dI, UI = solve(m, a, yhat, G, P, rb, ra, p, choose_a, a_lb=a_lb, b_lb=0.0, r_c=r_c, lim=lim)
     UI = UI - p.entry_cost * ((P * cI / yhat) ** (1 - p.sigma) if p.c_rel else cI ** (1 - p.sigma))
     feasibleN = P * cN + bN + dN <= m * (1 + 1e-9)          # no-invasion needs income to cover spending
     UN = np.where(feasibleN, UN, -np.inf)

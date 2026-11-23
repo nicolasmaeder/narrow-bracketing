@@ -179,6 +179,8 @@ class MParams:
         # searching, kappa x earnings, with kappa persistent per person (caregiving, health, alternatives); measured
         # unemployment counts searchers only (CPS)
         self.olf = True
+        self.spread_c = 0.02        # household borrowing rate over the bank loan rate, per quarter (card and HELOC mix)
+        self.cred_shock_rho = 0.95  # persistence of a credit-standards shock (experiments)
         self.ui_quarters = 2
         self.kappa_med = 0.1
         self.kappa_sd = 1.0
@@ -267,6 +269,8 @@ class Macro:
         self.ui_q = np.zeros(hp.N, int)              # quarters of UI left
         self.search = np.ones(hp.N, bool)
         self.f_pub = 0.5                             # published job-finding rate of searchers
+        self.cred_fac = 1.0                          # banks' credit standards: share of normal credit lines offered
+        self.cred_shock = 0.0
         if mp.firm_eff and mp.tech:
             self.a_eff = mp.sd_a * self.rng.standard_normal(F)
             self.AK = self.AK * np.exp(self.a_eff); self.AL = self.AL * np.exp(self.a_eff)
@@ -1443,14 +1447,28 @@ class Macro:
         go = (np.abs(k_star - self.kappa[w]) > hp.band) & emp[w]
         self.kappa[w] = np.where(go, k_star, self.kappa[w])
         d_now = (self.kappa[w] + hp.tau_m) * wage_h[w]
-        cw, _, _, _, _ = solve_accounts(m_cash[w] - d_now, self.b[w], self.a[w] + d_now, self.yhat[w], G_j[w], P, rb, ra, hp, False)
+        r_c = (float(np.mean(rL)) + mp.spread_c) if hp.cred_lim > 0 else None
+        if hp.cred_lim > 0:
+            # credit standards (a bank policy): normal lines, scaled down after a credit-standards shock, which decays
+            self.cred_fac = 1.0 - self.cred_shock
+            self.cred_shock *= mp.cred_shock_rho
+        lim_h = hp.cred_lim * self.cred_fac
+        cw, _, _, _, _ = solve_accounts(m_cash[w] - d_now, self.b[w], self.a[w] + d_now, self.yhat[w], G_j[w], P, rb, ra, hp, False, r_c=r_c, lim=lim_h)
         c[w], da[w] = cw, d_now
         db[w] = m_cash[w] - d_now - P * cw                    # budget closes exactly
         r = ~work
         wd = self.a[r] / (hp.J - self.age[r])
-        cr, _, _, _, _ = solve_accounts(m_cash[r] + wd, self.b[r], self.a[r], self.yhat[r], G_j[r], P, rb, ra, hp, False)
+        cr, _, _, _, _ = solve_accounts(m_cash[r] + wd, self.b[r], self.a[r], self.yhat[r], G_j[r], P, rb, ra, hp, False, r_c=r_c, lim=lim_h)
         c[r], da[r] = cr, -wd
         db[r] = m_cash[r] + wd - P * cr
+        self._chargeoff = 0.0
+        if r_c is not None:
+            # a household that cannot get back within its credit line defaults on the excess; the bank charges it off
+            fl_h = -lim_h * self.yhat / (1 + r_c)
+            exc = np.maximum(fl_h - db, 0.0)
+            db = db + exc
+            self._chargeoff = float(exc.sum())
+            self.E_B -= self._chargeoff
 
         # 6. goods market at posted prices; households and investing firms buy from the same firms
         S_h = P * c
@@ -1548,8 +1566,10 @@ class Macro:
                 self._spend_last = spend
                 M_chk = np.minimum(db, np.sqrt(mp.c_tr * self.yhat * spend / (2 * max(rb, 1e-9)))) if rb > 0 else db
                 sav = np.maximum(db - M_chk, 0.0)
-                int_hh = rb * sav.sum()
-                self.b = db + rb * sav
+                debt_h = np.maximum(-db, 0.0) if r_c is not None else np.zeros_like(db)   # credit-line balances
+                int_hh = rb * sav.sum() - (r_c or 0.0) * debt_h.sum()
+                self.b = db + rb * sav - (r_c or 0.0) * debt_h
+                self._hh_debt = float(debt_h.sum())
                 self._chk_share = float(M_chk.sum() / max(db.sum(), 1e-12))
             else:
                 int_hh = rb * db.sum()

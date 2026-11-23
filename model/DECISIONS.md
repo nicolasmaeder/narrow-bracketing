@@ -107,3 +107,14 @@ Idea (user): pooled, posted, per-head pay belongs to low-wage service jobs (flat
 - **Menu cost 0.03** (was 0.035): price changes 32% of quarters at 0.035, 43% at 0.025; target 35-40%.
 - **Firm-specific efficiency (`firm_eff`, off).** With 20 firms, idiosyncratic efficiency shocks do not wash out: at a stationary s.d. of 0.25 the economy breaks (u above 60%); at 0.1, unemployment volatility rises about fourfold. Firm wages still do not track efficiency (correlation about -0.1). Realistic firm heterogeneity needs many more firms per market and a pay rule in which more productive firms want to be bigger (Burdett-Mortensen).
 
+### Household credit lines (option `cred_lim`, off) and a credit-standards shock
+
+- **Design.** The buffer may go to -cred_lim x reference income (credit cards, HELOCs) at the bank loan rate + 0.02 a quarter. The buffer is valued as v(x + eps_B + cred_lim/beta), so cash and unused credit are both liquidity. Borrowing creates deposits (Werner). Debt beyond the line (after income falls) is charged off: the household's balance is reset to the line and the bank's equity falls by the same amount, so reserves stay at zero. The no-invasion branch of the mental-accounts problem had let debt roll and compound; the line now always binds.
+- **Calibration.** At a 1.5-quarter line, household debt is 0.13 of quarterly GDP and 34% of people are in debt (data: revolving credit about 0.19 of quarterly GDP; about a third of households carry card debt). Quarterly charge-offs are about 1.2% of balances (about 4.8% a year; card charge-offs run about 3-4%).
+- **Why it is off.** Over 150 quarters after a 400-quarter burn-in, all 4 seeds fall into recurrent deep slumps (u about 15%, s.d. about 13). Shorter runs looked fine. Credit adds a debt-deflation-type instability to be studied before it becomes the default.
+- **Credit-standards shock** (`SHOCK=credit` in `bust_diag.py`): banks cut lines by half, decaying at 0.95 a quarter. On impact consumption falls 5.5% and output 4.7%, as borrowers must repay at once. Unemployment is +1.9 points at a year and recovery takes about two years. A gradual phase-in of the cut would be more realistic.
+
+### 20% asset bust with the Nov 23 defaults (16 seeds)
+
+u +1.7 points at quarter 4, +4.5 at quarter 8, +2.0 at quarter 12, back to baseline by quarter 16. Output -1.7% at quarter 8 and -2.8% at quarter 12. Investment -9% at quarter 8. Policy rate cut 4.1 points. Price level -10% at quarter 8, settling 8% below the no-shock path (data: core prices about -4%). Recovery is faster than after 2008.
+
