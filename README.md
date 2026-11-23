@@ -32,6 +32,9 @@ Code for a macro model that is computed one quarter at a time. Every agent decid
 - **Newsvendor value of a worker's output.** Output is sold if demand exceeds the stock and otherwise carried at its inventory value, so goods firms hoard labor and perishable services do not.
 - **Sector price indexes.** Firms benchmark prices against their own sector's published index; machines are valued at the goods index.
 
+- **Household credit lines** (1.5 quarters of income at the loan rate + 2% a quarter; balances above the line are charged off): 34% of people carry debt, debt is 0.13 of quarterly GDP.
+- **External finance premium.** Each firm's loan rate is priced for expected loss, with default risk rising as interest coverage weakens (Bernanke-Gertler; Gilchrist et al. 2017).
+
 Long run (4 seeds, menu cost 0.035 and fixed neutral rate; inflation is 2.1-2.2% with neutral-rate learning): unemployment 4.7-5.6%, inflation 1.4-1.5%, growth about 1.9%, price over marginal cost 1.58, wage share 0.45, K/Y 1.2, wealth/GDP 7.0. Earnings: p90/p50 = 2.0 (data about 2), p10/p50 = 0.8 (data about 0.5), pooled service pay 0.82 x the median.
 
 20% asset bust (16 seeds, common random numbers): unemployment +4.5 points at quarter 8, back to baseline by quarter 16; output -2.8% at its trough; investment -9%; policy rate cut about 4 points; price level -10% (still too much deflation; core prices fell about 4% relative to trend in 2008-11).
@@ -40,7 +43,7 @@ Experiments (8 seeds): a 1-point rate hike leaves consumption unchanged on impac
 
 Household credit lines are on (1.5 quarters of income at the loan rate + 2% a quarter; balances above the line are charged off): 34% of people carry debt, debt is 0.13 of quarterly GDP.
 
-Options built but off: labor hoarding (`hoard`), minimum wage (`min_wage`, does not bind while service pay is 0.82 x the median), firm-specific efficiency (`firm_eff`; with 20 firms idiosyncratic shocks become aggregate), variable utilization.
+Options built but off: consumer durables with installment loans (`durables`: (S,s) upgrades against the user cost, 20-quarter loans within a 15% payment-to-income rule; a 1-point rate hike then lowers output 0.4-0.6% in the first three quarters, against about 0.05% without; the start-up from an arbitrary initial state takes about 250 quarters), labor hoarding (`hoard`), minimum wage (`min_wage`, does not bind while service pay is 0.82 x the median), firm-specific efficiency (`firm_eff`; with 20 firms idiosyncratic shocks become aggregate), variable utilization.
 
 Calibration pass (Nov 22): hiring cost about half a quarter's wage per hire (Blatter et al.); six application rounds a quarter; price-adjustment cost calibrated to the frequency of price changes (about 35-40% a quarter, as in Golosov-Lucas and Nakamura-Steinsson); Jorgenson user cost; production planned at next quarter's planned price; firms' expected inflation half anchored on the target, slow to move. Long run (4 seeds): unemployment about 2.7-4%, inflation 2.0%, growth 2%, price over marginal cost 1.42, wage share 0.48, K/Y 1.3, wealth/GDP 6.3. In a 20% asset-value bust the no-cut rule binds for about half of the firms reviewing pay; but prices still fall too much (about 14% over four years against roughly 4% for core prices in 2008-11), investment rises, and output barely falls.
 
