@@ -207,6 +207,8 @@ class MParams:
                                    # technique applies only to capital installed after it is chosen
         self.k_amort = False       # capital adjustment cost spread over the capital's life (user-cost rate)
         self.hire_long = False     # hiring values output along the long-run elasticity (False: same belief as pricing)
+        self.hoard = 0.0           # labor hoarding: a worker is kept while MRP covers the wage net of the expected cost
+                                   # of rehiring later (share of the wage; hiring costs about half a quarter's wage)
         self.clv_lr = False        # customers valued at the margin over long-run unit cost (capacity they need)
         self.cap_unc = False       # capacity planned for orders at the price without a capacity limit (see invest)
         self.utilization = False   # on: see README (destabilizes for now)
@@ -1202,7 +1204,7 @@ class Macro:
                     # keep a worker while marginal revenue product covers the wage
                     lo_, hi_ = np.zeros(F), 10 * np.maximum(L_prev, 1.0)
                     for _ in range(50):
-                        mid_ = 0.5 * (lo_ + hi_); pos_ = self._mrp(mid_) > w_eff
+                        mid_ = 0.5 * (lo_ + hi_); pos_ = self._mrp(mid_) > w_eff * (1 - mp.hoard)
                         lo_ = np.where(pos_, mid_, lo_); hi_ = np.where(pos_, hi_, mid_)
                     L_keep = 0.5 * (lo_ + hi_)
                     L_tgt = stay + H_want

@@ -118,3 +118,7 @@ Idea (user): pooled, posted, per-head pay belongs to low-wage service jobs (flat
 
 u +1.7 points at quarter 4, +4.5 at quarter 8, +2.0 at quarter 12, back to baseline by quarter 16. Output -1.7% at quarter 8 and -2.8% at quarter 12. Investment -9% at quarter 8. Policy rate cut 4.1 points. Price level -10% at quarter 8, settling 8% below the no-shock path (data: core prices about -4%). Recovery is faster than after 2008.
 
+### Utilization revisited (Nov 23) and labor hoarding (option `hoard`, off)
+
+Under the current defaults, utilization blew up within 30 quarters: with flat marginal cost the goods sector produced in bursts (employment from 2,000 to 24 heads). A firm holding stock valued a worker's output at the inventory value, just below the wage, and laid everyone off until the stock ran down; layoffs cost nothing. `hoard` keeps a worker while MRP covers the wage net of the expected cost of rehiring later (share of the wage; hiring costs about half a quarter's wage, Blatter et al.). With hoard = 0.3 and eps = 6, utilization is stable on 2 seeds (quarters 250-500): u 5.6-6.3% (s.d. about 2), inflation 2.1-2.3%, but capacity utilization 0.90-0.92 (planned 0.8) and K/Y up to 1.66. eps = 7.7 still blows up after about 370 quarters. Without utilization, hoarding at 0.3 destabilizes the default economy (u 8.2%, s.d. 7), so it stays off.
+
