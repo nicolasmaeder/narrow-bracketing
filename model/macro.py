@@ -207,6 +207,14 @@ class MParams:
                                    # technique applies only to capital installed after it is chosen
         self.k_amort = False       # capital adjustment cost spread over the capital's life (user-cost rate)
         self.hire_long = False     # hiring values output along the long-run elasticity (False: same belief as pricing)
+        # external finance premium (Bernanke-Gertler): the bank prices each firm's loan for its expected loss, with a
+        # default probability that rises as the firm's interest coverage (operating cash flow / interest, observed
+        # through the lending relationship) weakens: PD = pd0 (cov_ref / cov)^pd_el, rate = (1 + rL)/(1 - PD LGD) - 1
+        self.efp = True
+        self.pd0 = 0.004            # quarterly default probability at the reference coverage (about 1.6% a year)
+        self.cov_ref = 4.0          # reference interest coverage (investment-grade firms run about 4-6)
+        self.pd_el = 2.0            # halving coverage quadruples the default probability
+        self.lgd = 0.5              # loss given default
         self.hoard = 0.0           # labor hoarding: a worker is kept while MRP covers the wage net of the expected cost
                                    # of rehiring later (share of the wage; hiring costs about half a quarter's wage)
         self.clv_lr = False        # customers valued at the margin over long-run unit cost (capacity they need)
@@ -274,6 +282,7 @@ class Macro:
         self.cred_fac = 1.0                          # banks' credit standards: share of normal credit lines offered
         self.cred_shock = 0.0
         self.cred_target = 0.0
+        self.cov = np.full(F, 4.0)                   # firms' interest coverage as the bank sees it (smoothed)
         if mp.firm_eff and mp.tech:
             self.a_eff = mp.sd_a * self.rng.standard_normal(F)
             self.AK = self.AK * np.exp(self.a_eff); self.AL = self.AL * np.exp(self.a_eff)
@@ -1110,7 +1119,12 @@ class Macro:
         L_need = self.L_need
         # marginal cost of funds: a borrower pays rL; a firm without loans is financed at the margin by its owner,
         # the fund, which requires the deposit rate plus its published equity premium
-        r_own = np.where(self.loan > 0, rL, self.rb_lr + mp.erp)
+        if mp.efp:
+            pd_f = np.clip(mp.pd0 * (mp.cov_ref / np.maximum(self.cov, 1e-3)) ** mp.pd_el, 0.0, 0.25)
+            self.rL_f = (1 + rL) / (1 - pd_f * mp.lgd) - 1
+        else:
+            self.rL_f = np.full(F, rL)
+        r_own = np.where(self.loan > 0, self.rL_f, self.rb_lr + mp.erp)
         if mp.market_belief:                                  # expected demand = own position x expected size of the market
             self.lnA = self.ln_a + np.log(self.S_last * np.exp(self.gS) / self.P_ref())
         self._adopt_L = np.zeros(F)
@@ -1591,7 +1605,11 @@ class Macro:
             f_int = 0.0
         # firms: interest; overdraft if short
         m_int = (0.0 if mp.two_accounts else rb) * np.maximum(self.m, 0)   # firms' cash sits in checking
-        int_f = rL * self.loan
+        int_f = self.rL_f * self.loan
+        if mp.efp:                                            # the bank's view of coverage: operating cash flow / interest
+            cf_ = revenue - wb_f
+            cov_obs = np.clip(cf_ / np.maximum(int_f, 1e-9), 0.05, 50.0)
+            self.cov = np.where(self.loan > 0, 0.75 * self.cov + 0.25 * cov_obs, self.cov)
         self.m += m_int - int_f
         short = np.maximum(0.0, -self.m)
         self.loan += short; self.m += short
