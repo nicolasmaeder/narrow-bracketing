@@ -136,12 +136,12 @@ class MParams:
         self.g_T = 0.02             # forgetting rate on the firm's own record of technique turnover
         self.g_Y = 0.02             # forgetting rate on published real growth (final sales, labor productivity)
         self.deficit_rule = False   # tax rule allows the deficit that keeps debt at its target share of growing GDP
-        self.invest_lr = False      # capital evaluated at the long-run cost of funds plus a hurdle premium
+        self.invest_lr = True       # capital evaluated at the long-run cost of funds plus a hurdle premium
         self.fund_flow = False      # fund's valuation multiple moves with members' net flows (inelastic markets)
         self.k_rev = 0.02           # quarterly reversion of the multiple toward its fundamental value
         self.M_flow = 5.0           # price impact of flows: Gabaix and Koijen (2021) estimate about 5
         self.g_s = 0.05             # forgetting rate on own sales used to plan capacity
-        self.hurdle = 0.0125        # hurdle premium of firms' investment discount rate over their long-run cost of funds (5% a year)
+        self.hurdle = 0.0           # premium of firms' investment discount rate over their long-run cost of funds
         self.tau_min = 0.0          # lowest payroll tax rate (negative = wage subsidy)
         self.retiree_income = False # retirees' reference income tracks their own income (pension + drawdown)
         self.anchor_W = 0.5         # weight of (inflation target + published productivity growth) in firms' pay-growth forecast
@@ -210,6 +210,7 @@ class Macro:
         self.lnlam0 = np.log(mp.R0) + mp.pK * np.log(mp.theta_I * y0 / K0) + mp.pL * np.log(mp.theta_I * y0 / L0)
         self.poolK = np.array([y0 / K0]); self.poolL = np.array([y0 / L0])   # stock of known ideas (useful part)
         self.n_ideas = 0
+        self.wp_lr = np.full(F, 1.0 / P0)        # firm's long-run real wage (discounted average)
         self.s_lr = np.full(F, y0)               # firm's normal sales (discounted average of its own)
         self.piece = (np.arange(F) < mp.n_piece) if mp.weiss else np.zeros(F, bool)
         self.zbar = float(self.z[self.age < self.hp.J_W].mean())      # published average skill of the labor force
@@ -1066,8 +1067,13 @@ class Macro:
         # capacity is planned for normal sales: a discounted average of the firm's own sales, grown at published trend
         # growth over the coming year (a one-quarter surge in orders does not justify new capacity: no accelerator loop)
         s_cap = self.s_lr * np.exp(4 * self.gY) if mp.invest_lr else mu_s
-        K_next = self.capital(om_e if (mp.prod_lag and mp.v_marginal and mp.k_full) else W_firm,
-                              self.r_lr_f + mp.hurdle if mp.invest_lr else r_own, s_cap)
+        W_K = om_e if (mp.prod_lag and mp.v_marginal and mp.k_full) else W_firm
+        if mp.invest_lr:
+            # capital lasts many years, so the firm weighs it against the wage relative to prices it expects over that
+            # horizon: a discounted average of its own real wage, not this quarter's
+            self.wp_lr = (1 - mp.g_lr) * self.wp_lr + mp.g_lr * W_K / self.P_ref()
+            W_K = self.wp_lr * self.P_ref()
+        K_next = self.capital(W_K, self.r_lr_f + mp.hurdle if mp.invest_lr else r_own, s_cap)
         I_plan = np.maximum(0.0, K_next - (1 - mp.delta) * self.K)
         Ld = L_need(y_plan)
         Ld_pre = Ld.sum()
