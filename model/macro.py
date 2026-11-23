@@ -159,6 +159,29 @@ class MParams:
         # above; no reserve requirement. Open-market operations: the Fed buys or sells Treasury bills each quarter so
         # that reserves are res_target x annual GDP given the Treasury's account (TGA); the discount window covers any
         # shortfall. Fed profit (bills + discount loans - IOR) is remitted to the Treasury.
+        # long Treasury bonds: a perpetuity whose coupon decays at delta_c a quarter (one price covers the long end;
+        # duration about 7 years). The Treasury keeps phi_L of its marketable debt (market value) in long bonds.
+        # Long yield = expected average short rate (published bill rate and the Fed's neutral-rate estimate) + term
+        # premium; the term premium rises with the long debt private holders must carry (preferred habitat,
+        # Vayanos-Vila): TP = tp0 + lam_tp (private long holdings / annual GDP - h0). The Fed chooses a term-premium
+        # target and buys or sells long bonds to hit it (a policy rule): it holds the premium steady against supply,
+        # lowers it when the short-rate rule wants a rate below zero (QE), and lets it return to normal otherwise (QT)
+        self.long_bonds = True
+        self.delta_c = 0.975
+        self.phi_L = 0.7
+        self.tp0 = 0.0025           # normal term premium, per quarter (1% a year)
+        self.lam_tp = 0.0125        # +0.1 of GDP in private long holdings -> +0.5 points a year (QE event studies)
+        self.h0 = 0.5               # private long holdings at the normal premium, share of annual GDP
+        self.w_now = 0.34           # weight of today's short rate in the expected average over the bond's duration
+        self.kappa_tp = 0.25        # term-premium cut per unit of the short-rate rule below zero
+        self.g_tp = 0.1             # speed at which the target returns to normal
+        self.tp_cut_max = 0.004     # largest cut, per quarter (QE1-QE3 lowered the 10-year premium by about 1.5 points)
+        # Fed losses: True = the Treasury covers them (the Bank of England's indemnity of its asset purchase
+        # facility); False = carried as a deferred asset paid down from later income (the Fed). Without currency
+        # the Fed has no seigniorage to pay a deferred asset down, so it compounds at the IOR
+        self.fed_indemnity = True
+        self.fed_tp_rule = True     # False: the Fed keeps its long holdings fixed and the market sets the premium
+        self.bank_long = 0.1        # banks' share of private long holdings
         self.bank_bills = 0.05      # banks' liquidity holdings of Treasuries, share of their deposits
         self.res_target = 0.10      # reserves / annual nominal GDP (US 2024: about 11%)
         self.tga_target = 0.025     # Treasury's account at the Fed / annual GDP (about 2.5%)
@@ -351,6 +374,16 @@ class Macro:
         self._recap = 0.0
         self.Bills = self.SOMA = self.R_res = self.DW = self.TGA = 0.0   # Treasury bills, Fed holdings, reserves, discount loans, TGA
         self.F_B = 0.0                                # bills held by the retirement fund
+        self.X_L = self.X_F = self.X_fund = 0.0       # long bonds outstanding / held by the Fed / the fund (coupon units)
+        self.X_bk = np.zeros(mp.NB)                   # held by each bank
+        self.q_L = 1.0 / (1 + mp.i_star + mp.tp0 - mp.delta_c)   # long bond price
+        self.y_L = mp.i_star + mp.tp0
+        self.TP = self.TP_star = mp.tp0
+        self.E_F = 0.0                                # Fed's equity (market value); deferred asset when negative
+        self.def_F = 0.0                              # Fed's deferred asset (losses carried forward, not remitted)
+        self.qb_F = self.q_L                          # Fed's book price of its long bonds (amortized cost)
+        self._real_F = 0.0                            # Fed's realized gains on sales, booked next quarter
+        self._rule = 0.0
         self.i_bill = 0.0
         self.cov = np.full(F, 4.0)                   # firms' interest coverage as the bank sees it (smoothed)
         self.dq = np.zeros(F, int)                   # consecutive quarters with a loan write-down
@@ -1168,13 +1201,18 @@ class Macro:
         self.vac_last = vac.sum()
         return L_f, emp, quits, apps, vac, L_prev
 
+    def _tp_dev(self):
+        # the term premium on long Treasuries moves required returns on other long assets (portfolio balance)
+        return self.TP - self.mp.tp0 if self.mp.long_bonds else 0.0
+
     # ------------------------------------------------------------------ accounting
     def reserves(self):
         """Balance-sheet check (must be exactly zero): the bank's reserves implied by its own balance sheet
         (deposits + equity + discount loans - loans - its Treasury bills) minus the reserves on the Fed's balance
         sheet (bills held + discount loans - TGA). self.g is the Treasury's net position (TGA - bills), so the
         difference reduces to the expression below."""
-        deposits = self.b.sum() + self.m.sum() + self.div_pending.sum() + self.g + self.Fc + getattr(self, 'F_B', 0.0)
+        deposits = (self.b.sum() + self.m.sum() + self.div_pending.sum() + self.g + self.Fc + getattr(self, 'F_B', 0.0)
+                    + getattr(self, 'q_L', 0.0) * getattr(self, 'X_fund', 0.0) + getattr(self, 'E_F', 0.0))
         if not self.mp.fund:
             deposits += self.a.sum()
         return deposits + self.E_B - self.loan.sum() - (self.L_inst.sum() if getattr(self, 'L_inst', None) is not None else 0.0)
@@ -1202,6 +1240,7 @@ class Macro:
             # (Laubach-Williams style; FOMC long-run rate projections move slowly): a small step each quarter
             self.i_star_est += mp.g_rstar * (pi4 - mp.pi_star)
         rule = self.i_star_est + mp.phi_pi * (pi4 - mp.pi_star) - mp.phi_u * (self.u_prev - mp.u_star)
+        self._rule = rule
         i = max(0.0 if mp.zlb else -1.0, (self.i_prev if mp.fix_policy else mp.rho_i * self.i_prev + (1 - mp.rho_i) * rule) + i_shock)
         self.i_prev = i - i_shock
         # 2. bank and government post
@@ -1450,7 +1489,8 @@ class Macro:
         # capital is evaluated at the firm's discount rate for investment: its long-run cost of funds (discounted average
         # of its own) plus a hurdle premium. Firms' discount rates are high and move little with interest rates
         # (Gormsen and Huber 2023; Sharpe and Suarez 2021)
-        self.r_lr_f = (1 - mp.g_lr) * self.r_lr_f + mp.g_lr * r_own
+        # long-term finance: the term premium on long Treasuries passes into the cost of long-lived funds
+        self.r_lr_f = (1 - mp.g_lr) * self.r_lr_f + mp.g_lr * (r_own + (self.TP - mp.tp0 if mp.long_bonds else 0.0))
         # capacity is planned for normal sales: a discounted average of the firm's own sales, grown at published trend
         # growth over the coming year (a one-quarter surge in orders does not justify new capacity: no accelerator loop)
         s_cap = self.s_lr * np.exp(4 * self.gY) if mp.invest_lr else mu_s
@@ -1845,10 +1885,24 @@ class Macro:
         ior, dr = i + mp.ior_spread, i + mp.dr_spread
         ib = ior + mp.dealer_margin                           # auction stop-out yield: the dealer's bid
         self.i_bill = ib
-        bank_int = ib * (self.Bills - self.SOMA - self.F_B) + ior * self.R_res - dr * self.DW
-        fund_int = ib * self.F_B
-        remit = ib * self.SOMA + dr * self.DW - ior * self.R_res
-        g_int = -ib * self.Bills + remit                      # = -(bank_int + fund_int): the balance sheets close
+        # long bonds pay their coupons (one unit per bond held). The Fed books its long bonds at amortized cost and
+        # remits its net income; a loss is carried as a deferred asset and paid down from later income (2022-24)
+        bank_int = ib * (self.Bills - self.SOMA - self.F_B) + ior * self.R_res - dr * self.DW + self.X_bk.sum()
+        fund_int = ib * self.F_B + self.X_fund
+        NI_F = (ib * self.SOMA + dr * self.DW - ior * self.R_res + self.X_F
+                - self.qb_F * (1 - mp.delta_c) * self.X_F + self._real_F)
+        self._real_F = 0.0
+        if mp.long_bonds and not mp.fed_indemnity:
+            pay_ = min(max(NI_F, 0.0), self.def_F)
+            self.def_F += max(-NI_F, 0.0) - pay_
+            remit = max(NI_F, 0.0) - pay_
+        else:
+            remit = NI_F
+        self.E_F += ib * self.SOMA + dr * self.DW - ior * self.R_res + self.X_F - remit
+        g_int = -ib * self.Bills - self.X_L + remit           # the balance sheets close (the Fed keeps the rest)
+        # the part of the coupons that repays principal (at the going price) is not a cost in the budget the tax rule
+        # sees: interest is the coupon less that repayment (the yield on the debt's market value)
+        self._amort_L = self.q_L * (1 - mp.delta_c) * self.X_L
         self._remit = remit
         # bank
         prof_B = int_f.sum() + bank_int - int_hh - m_int.sum() - loss.sum() - f_int + self._int_inst
@@ -1857,7 +1911,7 @@ class Macro:
             # and interbank interest (positions held during the quarter) and of the fund's deposit interest
             NB = mp.NB
             Dk_prev = np.maximum(self._Dk_prev, 1e-12) if getattr(self, "_Dk_prev", None) is not None else np.ones(NB)
-            base = self.i_bill * self.Bb_k + ior * self.res_k
+            base = self.i_bill * self.Bb_k + ior * self.res_k + self.X_bk
             bint_k = base + (bank_int - base.sum()) * Dk_prev / Dk_prev.sum()
             prof_k = (np.bincount(self.bank_f, int_f - loss - m_int, NB)
                       - np.bincount(self.bank_h, getattr(self, "_int_h", np.zeros(N)), NB)
@@ -1884,7 +1938,7 @@ class Macro:
             # market's value raises prices by about M = 5%)
             V = np.maximum(self.Ehat, 0.0) * self.mult
         else:
-            r_f = mp.r_assumed if mp.r_assumed else self.rb_lr + mp.erp
+            r_f = mp.r_assumed if mp.r_assumed else self.rb_lr + mp.erp + self._tp_dev()
             V = np.maximum(self.Ehat, 0.0) / r_f
         V = V * self.vshock                                   # experiments: asset-value bust (decays back)
         self.vshock = 1.0 + mp.vshock_rho * (self.vshock - 1.0)
@@ -1894,7 +1948,7 @@ class Macro:
             self.Fc += div_f.sum() + div_B + fund_int
             need_c = mp.fund_cash_q * (-da[da < 0].sum())
             # safe part of the portfolio: bills bought from (or sold to) the dealer, up to what the dealer holds
-            nav_b = V.sum() + self.E_B + self.Fc + self.F_B
+            nav_b = V.sum() + self.E_B + self.Fc + self.F_B + self.q_L * self.X_fund
             fb_new = float(np.clip(mp.fund_bills * nav_b, 0.0, max(self.Bills - self.SOMA, 0.0)))
             self.Fc -= fb_new - self.F_B; self.F_B = fb_new
             x = self.Fc - need_c
@@ -1904,13 +1958,13 @@ class Macro:
                 # (trailing earnings at the long-run deposit rate plus the published premium)
                 nav_pre = V.sum() + self.E_B + self.Fc
                 flow = da.sum() / max(nav_pre, 1e-9)
-                m_fund = 1.0 / (self.rb_lr + mp.erp)
+                m_fund = 1.0 / (self.rb_lr + mp.erp + self._tp_dev())
                 self.mult = float(np.clip(self.mult * np.exp(mp.M_flow * flow - mp.k_rev * np.log(self.mult / m_fund)), 4.0, 400.0))
             wv = V / V.sum() if V.sum() > 0 else np.full(F, 1 / F)
             self.m += x * wv; self.Fc -= x
             short = np.maximum(0.0, -self.m)
             self.loan += short; self.m += short
-            nav = V.sum() + self.E_B + self.Fc + self.F_B
+            nav = V.sum() + self.E_B + self.Fc + self.F_B + self.q_L * self.X_fund
             self.a = a_pre * nav / a_pre.sum()
         elif mp.div_to_fund:                                 # diagnostic: profits accrue to retirement balances
             self.a += (div_f.sum() + div_B) * self.a / self.a.sum()
@@ -1963,7 +2017,7 @@ class Macro:
             self.emp[dead] = False
         # structural budget: benefits at u*, wage bill at u* (unemployment benefits are an automatic stabilizer)
         Lf = Lforce.sum()
-        self.budget_prev = (hp.ui * W * Lf * mp.u_star + pension.sum() - g_int - estate + G_paid, W * Lf * (1 - mp.u_star))
+        self.budget_prev = (hp.ui * W * Lf * mp.u_star + pension.sum() - g_int - self._amort_L - estate + G_paid, W * Lf * (1 - mp.u_star))
 
         # 8. learning, observed aggregates, next quarter's wage
         loss_rate = loss.sum() / max((self.loan + loss).sum(), 1e-12)
@@ -2038,8 +2092,65 @@ class Macro:
         # Treasury: keeps its account at the Fed near target and issues bills for the rest of its net position;
         # Fed: open-market operations to hold reserves at target; the discount window covers what bills cannot
         GDP_a_ = sum(self.GDP_hist[-4:])
-        self.Bills = max(mp.tga_target * GDP_a_ - self.g, 0.0)
-        self.TGA = self.g + self.Bills
+        TGA_t = mp.tga_target * GDP_a_
+        if mp.long_bonds:
+            d_ = mp.delta_c
+            q0 = self.q_L
+            XL0, XF0, Xfd0, Xbk0 = self.X_L, self.X_F, self.X_fund, self.X_bk.copy()
+            # Fed's term-premium target: holds it at normal against supply; cuts it when the short-rate rule asks
+            # for a rate below zero (QE); otherwise lets it return to normal gradually (QT)
+            tp_back = self.TP_star + mp.g_tp * (mp.tp0 - self.TP_star)
+            self.TP_star = min(max(mp.tp0 + mp.kappa_tp * min(self._rule, 0.0), mp.tp0 - mp.tp_cut_max), tp_back)
+            # long yield: expected average short rate over the bond's duration (today's bill rate and the Fed's
+            # published neutral-rate estimate) plus the term premium
+            yhat = max(mp.w_now * ib + (1 - mp.w_now) * self.i_star_est, 0.0)
+            self.TP_star = max(self.TP_star, -yhat)            # the Fed does not push the long yield below zero
+            g_pre = self.g + q0 * XL0                          # Treasury's position before revaluing its long debt
+            TP = self.TP_star
+            for _ in range(100):
+                q = 1.0 / max(1.0 + yhat + TP - d_, 0.01)
+                g_new = g_pre - q * d_ * XL0
+                Dm = max(TGA_t - g_new, 0.0)                   # marketable debt the Treasury must carry
+                XL = max(d_ * XL0, mp.phi_L * Dm / q)          # issues long bonds to its target share (no buybacks)
+                if mp.fed_tp_rule:
+                    Xp = max((mp.h0 + (self.TP_star - mp.tp0) / mp.lam_tp) * GDP_a_ / q, 0.0)
+                    if XL - Xp >= min(d_ * XF0, XL) - 1e-12 and TP == self.TP_star:
+                        break                                  # the Fed buys what private holders will not, at its target
+                    # the target would need sales: the Fed shrinks only by letting its bonds run off (as in 2017-19
+                    # and 2022-), and the market sets the premium on what private holders must carry
+                    Xp = XL - min(d_ * XF0, XL)
+                else:
+                    Xp = XL - min(XF0, XL)                     # passive Fed: keeps its holdings (reinvests runoff)
+                TP_n = max(mp.tp0 + mp.lam_tp * (q * Xp / max(GDP_a_, 1e-12) - mp.h0), -yhat)
+                if abs(TP_n - TP) < 1e-12:
+                    break
+                TP = 0.5 * TP + 0.5 * TP_n
+            XF = XL - Xp
+            self.g = g_new                                     # issuance at the market price leaves net worth unchanged
+            self.q_L, self.TP, self.y_L = q, TP, yhat + TP
+            # Fed: market value and book value of its holdings (realized gains on sales are booked next quarter)
+            self.E_F += q * d_ * XF0 - q0 * XF0
+            bv = self.qb_F * d_ * XF0
+            dX = XF - d_ * XF0
+            if dX >= 0:
+                bv += q * dX
+            else:
+                self._real_F += (q - self.qb_F) * (-dX); bv += self.qb_F * dX
+            self.qb_F = bv / XF if XF > 1e-12 else q
+            # banks mark their long bonds to market (duration risk on their equity)
+            reval = q * d_ * Xbk0 - q0 * Xbk0
+            if mp.multi_bank:
+                self.E_k += reval; self.E_B = float(self.E_k.sum())
+            else:
+                self.E_B += float(reval.sum())
+            Xbk_tot = mp.bank_long * Xp
+            Xfd = Xp - Xbk_tot
+            self.Fc -= q * (Xfd - d_ * Xfd0)                   # the fund buys (sells) at the market price
+            self.X_L, self.X_F, self.X_fund = XL, XF, Xfd
+            self.X_bk = np.full(mp.NB, Xbk_tot / mp.NB)
+        MV_L, MV_F = self.q_L * self.X_L, self.q_L * self.X_F
+        self.Bills = max(TGA_t - self.g - MV_L, 0.0)
+        self.TGA = self.g + self.Bills + MV_L
         # private demand at the going yield: the fund's portfolio share and the banks' liquidity share of deposits;
         # the Fed absorbs the rest of the supply, so yields stay put however much debt is issued (2020), and reserves
         # are the result
@@ -2049,8 +2160,8 @@ class Macro:
         if self.F_B > self.Bills - self.SOMA:                 # the Fed's purchases also come out of the fund's bills
             dfb = self.F_B - max(self.Bills - self.SOMA, 0.0)
             self.F_B -= dfb; self.Fc += dfb
-        self.DW = max(self.TGA - self.SOMA, 0.0)
-        self.R_res = self.SOMA + self.DW - self.TGA
+        self.DW = max(self.TGA + self.E_F - self.SOMA - MV_F, 0.0)
+        self.R_res = self.SOMA + MV_F + self.DW - self.TGA - self.E_F
         if mp.multi_bank:
             NB = mp.NB
             # a bank with negative equity is recapitalized by its owner (the fund) for now
@@ -2076,7 +2187,9 @@ class Macro:
                   + (np.bincount(self.bank_h, self.L_inst, NB) if getattr(self, "L_inst", None) is not None else 0.0))
             Bb = max(self.Bills - self.SOMA - self.F_B, 0.0)
             self.Bb_k = Bb * Dk / max(Dk.sum(), 1e-12)
-            self.res_k = Dk + self.E_k - Lk - self.Bb_k
+            self.X_bk = self.X_bk.sum() * Dk / max(Dk.sum(), 1e-12)
+            # (discount-window loans add to the borrowing banks' reserves; split by deposits)
+            self.res_k = Dk + self.E_k - Lk - self.Bb_k - self.q_L * self.X_bk + self.DW * Dk / max(Dk.sum(), 1e-12)
             self._Dk_prev = Dk
         self.t += 1
         if not record:
