@@ -7,11 +7,19 @@ KW=json.loads(sys.argv[1]) if len(sys.argv)>1 else {}
 SIZE=float(sys.argv[2]) if len(sys.argv)>2 else 0.3
 SHOCK=__import__('os').environ.get('SHOCK','asset')
 def run(seed):
-    m=build(seed=seed, **KW)
-    for t in range(400): m.step()
+    import os, pickle, hashlib
+    key=hashlib.md5((json.dumps(KW,sort_keys=True)+hashlib.md5(open(os.path.join(os.path.dirname(__file__),'macro.py'),'rb').read()).hexdigest()).encode()).hexdigest()[:12]
+    fn=os.path.join(os.path.dirname(__file__),'cache','burn_%s_%d.pkl'%(key,seed))
+    if os.path.exists(fn):                          # burned-in economy for this config, code version and seed
+        m=pickle.load(open(fn,'rb'))
+    else:
+        m=build(seed=seed, **KW)
+        for t in range(400): m.step()
+        m._mrp=None; os.makedirs(os.path.dirname(fn),exist_ok=True); pickle.dump(m,open(fn,'wb'))
     m._mrp=None; a,b=copy.deepcopy(m),copy.deepcopy(m)
     if SHOCK=='rate': pass
     elif SHOCK=='credit': b.cred_target=SIZE         # banks cut credit lines by SIZE, phased in (decays at cred_shock_rho)
+    elif SHOCK=='2008': b.vshock=1-SIZE; b.cred_target=0.5   # asset bust plus a phased-in halving of credit lines
     else: b.vshock=1-SIZE                           # asset values fall by SIZE
     A=[];B=[];tA=[];tB=[]
     for _ in range(H):
