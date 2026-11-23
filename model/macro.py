@@ -176,10 +176,10 @@ class MParams:
         self.kappa_tp = 0.25        # term-premium cut per unit of the short-rate rule below zero
         self.g_tp = 0.1             # speed at which the target returns to normal
         self.tp_cut_max = 0.004     # largest cut, per quarter (QE1-QE3 lowered the 10-year premium by about 1.5 points)
-        # Fed losses: True = the Treasury covers them (the Bank of England's indemnity of its asset purchase
-        # facility); False = carried as a deferred asset paid down from later income (the Fed). Without currency
-        # the Fed has no seigniorage to pay a deferred asset down, so it compounds at the IOR
-        self.fed_indemnity = True
+        # Fed losses: False = carried as a deferred asset (the Fed since 2011): a loss is paid in new reserves, and
+        # remittances resume only once later income has paid it down; True = the Treasury covers them (the Bank of
+        # England's indemnity of its asset purchase facility)
+        self.fed_indemnity = False
         self.fed_tp_rule = True     # False: the Fed keeps its long holdings fixed and the market sets the premium
         self.bank_long = 0.1        # banks' share of private long holdings
         self.bank_bills = 0.05      # banks' liquidity holdings of Treasuries, share of their deposits
