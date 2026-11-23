@@ -90,7 +90,7 @@ class MParams:
         self.eta_L = 8.0            # workers' elasticity of job choice to the relative wage (logit)
         self.ojs = 0.10             # share of employed workers searching on the job each quarter
         self.hiring = "convex"      # vacancy mode: firms choose hires with convex recruiting costs ("convex") or post openings for the whole gap ("gap")
-        self.kappa_h = 20.0         # recruiting cost scale: average cost per hire = kappa_h x T x (hiring rate)^psi_h quarters of a worker's time
+        self.kappa_h = 5.0          # recruiting time per hire scale: about half a quarter's wage per hire at normal hiring (Blatter, Muehlemann and Schenker: 10-17 weeks of wages for skilled hires; lower for others)
         self.psi_h = 1.0            # convexity: marginal cost per hire = (1 + psi_h) x average (Blatter et al.: marginal about 2x average)
         self.q_ref = 0.8            # job-filling rate at which tightness adds nothing to recruiting cost
         self.g_pub = 0.25           # forgetting rate on published labor statistics
@@ -99,7 +99,7 @@ class MParams:
         self.cap_aware = True       # firms price for the output the labor they expect to get can make
         self.stockout_loss = 0.3    # share of customers turned away by a stockout who switch sellers (Anderson, Fitzsimons and Simester 2006)
         self.rho_c = 0.5            # customer market: share of buyers who re-shop each quarter (1 = all re-shop, no customer base)
-        self.menu_cost = 0.012      # state-dependent pricing: change price when the expected gain exceeds this share of revenue (Zbaracki et al. 2004: physical plus managerial costs about 1.2%); 0: fixed review_p
+        self.menu_cost = 0.035      # state-dependent pricing: change price when the expected gain exceeds this share of revenue; calibrated to the frequency of price changes (about 40% a quarter), as in Golosov-Lucas and Nakamura-Steinsson (direct measures, Zbaracki et al. 2004: about 1.2%); 0: fixed review_p
         self.k_full = False         # capital decision uses the wage-based labor cost (as inventory)
         self.v_full = False         # inventory valued at production cost at the wage (recruiting costs are not inventoriable), not including marginal hiring cost
         self.v_marginal = True      # unsold stock valued at the marginal cost of replacing it (internal labor cost), not at a price-level-based unit cost
@@ -158,6 +158,9 @@ class MParams:
         self.piece_own_market = True   # output-paying firms compare their pay with other output-paying firms
         self.commission = 0.0       # > 0: output-paying firms pay this share of the value of output per unit of effective labor
                                     # (commission contract, like the JMP's capital sector paying the value of output); quarterly
+        self.search_rounds = 6      # application rounds per quarter for unemployed contacts (a quarter has many weeks of search)
+        self.plan_price = True      # production planned at next quarter's planned price, not this quarter's rationing price
+        self.jorgenson = True       # user cost of capital nets out expected capital-goods inflation
         self.pay_hiring = True      # pay review prices the hiring the firm plans (demand-dependent pay)
         self.vshock_rho = 0.95      # persistence of an asset-value shock
         self.exo_ramp = 0           # diagnostic: quarters over which exogenous growth ramps up
@@ -400,7 +403,7 @@ class Macro:
         self._adopt_L = np.where(go, mp.adopt_cost * p * np.exp(self.lnA) / w, 0.0)
 
     # ------------------------------------------------------------------ firm problems
-    def price_and_stock(self, W, rL, S_cap=None, W_int=None):
+    def price_and_stock(self, W, rL, S_cap=None, W_int=None, plan=False):
         """Quarter problem of each firm, from its own state (capital, inventory) and beliefs (demand level A,
         noise sigma), at the posted wage and loan rate and the last observed price index:
             max over p, S >= n:  p E[min(D, S)] + v E[(S - D)+] - C(S - n),   D = A (p/P)^(-e) xi,
@@ -469,6 +472,8 @@ class Macro:
         k2 = val2.argmax(1)
         idx = np.arange(F)
         p_o, S_o, mu_o = p2[idx, k2], S2[idx, k2], mu2[idx, k2]
+        if plan:
+            return p_o, S_o, mu_o, v
         if self.mp.menu_cost > 0 and getattr(self, "_p_old", None) is not None:
             # state-dependent pricing: the firm changes its price when the expected gain from re-optimizing (its own
             # beliefs) exceeds a menu cost, a share of revenue at the old price (Levy et al. 1997)
@@ -493,7 +498,8 @@ class Macro:
             min over K':  W L(s_hat, K') + P (rL + delta) K' + phi P K ((K' - K)/K)^2 / 2,  K' >= (1-delta) K."""
         mp = self.mp; a_, Z = mp.alpha, mp.Z
         P, K = self.P_ref(), self.K
-        uK = P * (rL + mp.delta)
+        # Jorgenson user cost: interest net of the expected rise in the price of capital goods, plus depreciation
+        uK = P * (rL - (self.anchored(self.pi_e) if mp.jorgenson else 0.0) + mp.delta)
         L = lambda Kn: self.L_need(s_hat, Kn)
         f = lambda Kn: W * self.mpk_over_mpl(Kn, L(Kn)) - uK - mp.phi_K * P * (Kn - K) / K   # decreasing in K'
         lo, hi = (1 - mp.delta) * K, 3 * K
@@ -821,8 +827,14 @@ class Macro:
         seek1 = work & (((job < 0) & contact) | ((job >= 0) & (u_ojs < mp.ojs)))
         V2 = round_(seek1, u_c1, k_1, V.copy(), True)
         V2 = np.maximum(0.0, V2 + 0.0)
-        seek2 = work & (job < 0) & contact
-        round_(seek2, u_c2, k_2, V2, False)
+        # further rounds within the quarter: unemployed contacts who were turned away apply again (a quarter has many
+        # weeks of search); each round draws fresh choices (fixed-size draws)
+        for rr in range(mp.search_rounds - 1):
+            seek2 = work & (job < 0) & contact
+            if rr == 0:
+                V2 = round_(seek2, u_c2, k_2, V2, False)
+            else:
+                V2 = round_(seek2, rng.random(N), rng.random(N), V2, False)
         L_f = np.bincount(job[job >= 0], z[job >= 0], F)
         emp = job >= 0
         self.theta = vac.sum() / max(U_seek, 1e-9)                      # vacancies per unemployed (efficiency units)
@@ -1030,8 +1042,16 @@ class Macro:
                 # production is planned at the marginal cost of the labor that makes it, the same cost the hiring
                 # decision uses: the wage, plus (if the firm is adding workers) the marginal hiring cost spread over
                 # expected tenure
-                S_next = self.stock_target(om_e, self.p, mu_s, v, carry, sd * np.sqrt(2))
+                if mp.plan_price:
+                    # production for next quarter is planned with next quarter's price: the price the firm would
+                    # choose jointly with its stock (no stock constraint, no adjustment cost), not this quarter's
+                    # rationing price; otherwise a high price that rations scarce stock would plan scarce stock again
+                    p_pl, _, mu_pl, v_pl = self.price_and_stock(W_firm, r_own, plan=True)
+                    S_next = self.stock_target(om_e, p_pl, mu_pl, v_pl, carry, sd * np.sqrt(2))
+                else:
+                    S_next = self.stock_target(om_e, self.p, mu_s, v, carry, sd * np.sqrt(2))
                 y_plan = np.maximum(0.0, S_next - carry)
+                self._ycap_ratio = self.prod(np.maximum(L_exp, 0.0)) / np.maximum(y_plan, 1e-9)
                 y_plan = np.minimum(y_plan, self.prod(np.maximum(L_exp, 0.0)))
             else:
                 S_next = self.stock_target(W_firm, self.p, mu_s, v, carry, sd * np.sqrt(2))
