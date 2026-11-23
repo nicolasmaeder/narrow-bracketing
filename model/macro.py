@@ -211,6 +211,7 @@ class MParams:
         # default probability that rises as the firm's interest coverage (operating cash flow / interest, observed
         # through the lending relationship) weakens: PD = pd0 (cov_ref / cov)^pd_el, rate = (1 + rL)/(1 - PD LGD) - 1
         self.efp = True
+        self.ms_gain = 1.0          # weight on the latest published market size in the demand belief (1: latest only)
         # consumer durables: a stock that depreciates dur_delta a quarter; the household upgrades to its target
         # (dur_theta quarters of reference income at goods prices) when the service value of closing the gap, psi x
         # gap share x income, covers the user cost (borrowing rate + depreciation) of the gap plus a fixed cost
@@ -1146,7 +1147,13 @@ class Macro:
             self.rL_f = np.full(F, rL)
         r_own = np.where(self.loan > 0, self.rL_f, self.rb_lr + mp.erp)
         if mp.market_belief:                                  # expected demand = own position x expected size of the market
-            self.lnA = self.ln_a + np.log(self.S_last * np.exp(self.gS) / self.P_ref())
+            if mp.ms_gain < 1:                                 # market-size belief: discounted average of published sizes
+                if getattr(self, "S_bel", None) is None:
+                    self.S_bel = self.S_last
+                self.S_bel = (1 - mp.ms_gain) * self.S_bel * np.exp(self.gS) + mp.ms_gain * self.S_last
+                self.lnA = self.ln_a + np.log(self.S_bel * np.exp(self.gS) / self.P_ref())
+            else:
+                self.lnA = self.ln_a + np.log(self.S_last * np.exp(self.gS) / self.P_ref())
         self._adopt_L = np.zeros(F)
         if mp.firm_eff and mp.tech:                           # firm efficiency shock (applies to all its machines)
             da = (mp.rho_a - 1) * self.a_eff + mp.sd_a * np.sqrt(1 - mp.rho_a ** 2) * self.rng.standard_normal(F)
