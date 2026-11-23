@@ -59,6 +59,15 @@ class MParams:
         self.c_tr = 0.001           # cost of a transfer between savings and checking, share of quarterly income (Baumol-Tobin)
         self.bank_objective = True
         self.NB = 5
+        # separate banks (multi_bank): each household and firm banks with one bank (deposits, credit line,
+        # installment and business loans there); each bank posts its own rates as a best response to its rivals'
+        # last posted rates given its own customers and loss history; each quarter a share of customers re-shop
+        # and choose a bank by logit on rates (the same logit the banks use); each bank has its own balance sheet,
+        # income statement and dividends; payments between banks settle in reserves, and a bank short of reserves
+        # borrows them from banks with a surplus at IOR (interbank market in a floor system)
+        self.multi_bank = True
+        self.sw_h = 0.02            # households re-shopping their bank per quarter (deposit switching is rare)
+        self.sw_f = 0.05            # firms re-shopping their lender per quarter
         self.a_D = 150.0            # depositors' semi-elasticity of bank choice (per unit of quarterly rate): savings spread about 2%/yr
         self.a_L = 250.0            # borrowers' semi-elasticity: loan spread about 2%/yr
         self.g_loss = 0.05          # loss-rate gain
@@ -331,6 +340,14 @@ class Macro:
         self.cred_fac = 1.0                          # banks' credit standards: share of normal credit lines offered
         self.cred_shock = 0.0
         self.cred_target = 0.0
+        NB = mp.NB
+        self.bank_h = self.rng.integers(0, NB, N)                 # each household's bank
+        self.bank_f = np.arange(F) % NB                           # each firm's bank
+        self.rd_k = np.full(NB, max(0.0, mp.i_star - mp.m_b)); self.rL_k = np.full(NB, mp.i_star + mp.m_L)
+        self.loss_k = np.zeros(NB)
+        self.res_k = np.zeros(NB); self.Bb_k = np.zeros(NB)       # positions held during the quarter
+        self._chg_h = np.zeros(N); self._int_i_h = np.zeros(N)
+        self._recap = 0.0
         self.Bills = self.SOMA = self.R_res = self.DW = self.TGA = 0.0   # Treasury bills, Fed holdings, reserves, discount loans, TGA
         self.F_B = 0.0                                # bills held by the retirement fund
         self.i_bill = 0.0
@@ -422,6 +439,7 @@ class Macro:
         self.lnQ = np.full(F, np.log(0.02))      # belief: quit rate at the going wage
         # ---------------- bank and government: government account is the residual that sets reserves to zero
         self.E_B = mp.cap_B * self.loan.sum()
+        self.E_k = np.full(mp.NB, self.E_B / mp.NB)               # each bank's equity
         self.Fc = 0.0
         self.rb_lr = max(0.0, mp.i_star - mp.m_b)
         if mp.fund:                              # retirement balances are claims on the fund; scale to its initial value
@@ -901,6 +919,38 @@ class Macro:
         k = val.argmax(1); idx = np.arange(self.mp.F)
         return xg[idx, k] * We, om[idx, k]
 
+    def bank_rates_k(self, i):
+        """Each bank's best response to its rivals' last posted rates (mean of the others), with its own depositors
+        (savings by Baumol-Tobin as in bank_rates) and its own loss rate. Shares are logit in the rate (a_D, a_L)."""
+        mp = self.mp; NB = mp.NB
+        rd_new = np.zeros(NB); rL_new = np.zeros(NB)
+        D_all = np.maximum(self.b, 0.0)
+        K_all = mp.c_tr * self.yhat * (self._spend_last if getattr(self, "_spend_last", None) is not None else self.yhat) / 2
+        for k in range(NB):
+            riv_d = (self.rd_k.sum() - self.rd_k[k]) / (NB - 1); riv_L = (self.rL_k.sum() - self.rL_k[k]) / (NB - 1)
+            mine = self.bank_h == k
+            D_h, K_h = D_all[mine], K_all[mine]
+            Dtot = D_h.sum()
+            def prof(x):
+                x = max(x, 1e-7)
+                Sx = np.maximum(D_h - np.sqrt(K_h / x), 0.0).sum()
+                sh = 1.0 / (1.0 + (NB - 1) * np.exp(mp.a_D * (riv_d - x)))
+                return sh * (i * Dtot - x * Sx)
+            grid = np.linspace(0.0, max(i, 1e-4), 101)
+            vals = np.array([prof(x) for x in grid])
+            j = int(vals.argmax()); lo_, hi_ = grid[max(j - 1, 0)], grid[min(j + 1, 100)]
+            fine = np.linspace(lo_, hi_, 21); rd_new[k] = max(0.0, float(fine[np.argmax([prof(x) for x in fine])]))
+            lam = self.loss_k[k]
+            lo, hi = riv_L - 0.05, riv_L + 0.05
+            for _ in range(60):
+                x = 0.5 * (lo + hi)
+                sh = 1.0 / (1.0 + (NB - 1) * np.exp(-mp.a_L * (riv_L - x)))
+                g = -(x * (1 - lam) - i - (1 - lam) / (mp.a_L * (1 - sh)))
+                lo, hi = (x, hi) if g > 0 else (lo, x)
+            rL_new[k] = 0.5 * (lo + hi)
+        self.rd_k, self.rL_k = rd_new, rL_new
+        return rd_new, rL_new
+
     def bank_rates(self, i):
         """Each bank's best response to rivals' last posted rates (all banks symmetric, so one is computed):
             deposits:  max over rd  (i - rd) s_D(rd),  s_D = e^{a_D rd} / (e^{a_D rd} + (NB-1) e^{a_D rd_rivals})
@@ -1154,7 +1204,13 @@ class Macro:
         i = max(0.0 if mp.zlb else -1.0, (self.i_prev if mp.fix_policy else mp.rho_i * self.i_prev + (1 - mp.rho_i) * rule) + i_shock)
         self.i_prev = i - i_shock
         # 2. bank and government post
-        if mp.bank_objective:
+        if mp.multi_bank:
+            rdk, rLk = self.bank_rates_k(i)
+            self.rb_h = rdk[self.bank_h]                     # each household's deposit rate (its bank's)
+            w_d = np.bincount(self.bank_h, np.maximum(self.b, 0.0), mp.NB)
+            rb = float(w_d @ rdk / max(w_d.sum(), 1e-12))    # deposit-weighted average (published)
+            rL = float(rLk.mean())
+        elif mp.bank_objective:
             rb, rL = self.bank_rates(i)
         else:
             rb = max(0.0, i - mp.m_b)
@@ -1177,11 +1233,12 @@ class Macro:
         L_need = self.L_need
         # marginal cost of funds: a borrower pays rL; a firm without loans is financed at the margin by its owner,
         # the fund, which requires the deposit rate plus its published equity premium
+        rL_base = self.rL_k[self.bank_f] if mp.multi_bank else np.full(F, rL)   # the firm's own bank
         if mp.efp:
             pd_f = np.clip(mp.pd0 * (mp.cov_ref / np.maximum(self.cov, 1e-3)) ** mp.pd_el, 0.0, 0.25)
-            self.rL_f = (1 + rL) / (1 - pd_f * mp.lgd) - 1
+            self.rL_f = (1 + rL_base) / (1 - pd_f * mp.lgd) - 1
         else:
-            self.rL_f = np.full(F, rL)
+            self.rL_f = rL_base.copy()
         r_own = np.where(self.loan > 0, self.rL_f, self.rb_lr + mp.erp)
         if mp.market_belief:                                  # expected demand = own position x expected size of the market
             if mp.ms_gain < 1:                                 # market-size belief: discounted average of published sizes
@@ -1541,6 +1598,7 @@ class Macro:
             self.n_inst = np.maximum(self.n_inst - 1, 0)
             self.L_inst = np.where(self.n_inst > 0, self.L_inst, 0.0)
             self._int_inst = float(int_i[on_].sum())
+            self._int_i_h = np.where(on_, int_i, 0.0)
             cash_D += pay
             # purchases
             self.dur = self.dur * (1 - mp.dur_delta)
@@ -1580,7 +1638,12 @@ class Macro:
         go = (np.abs(k_star - self.kappa[w]) > hp.band) & emp[w]
         self.kappa[w] = np.where(go, k_star, self.kappa[w])
         d_now = (self.kappa[w] + hp.tau_m) * wage_h[w]
-        r_c = (float(np.mean(rL)) + mp.spread_c) if hp.cred_lim > 0 else None
+        if hp.cred_lim > 0:
+            r_c = (self.rL_k[self.bank_h] + mp.spread_c) if mp.multi_bank else (float(np.mean(rL)) + mp.spread_c)
+        else:
+            r_c = None
+        rb_v = self.rb_h if mp.multi_bank else np.full(N, rb)
+        r_c_v = (r_c if np.ndim(r_c) else np.full(N, r_c)) if r_c is not None else None
         if hp.cred_lim > 0:
             # credit standards (a bank policy): normal lines, scaled down after a credit-standards shock, which decays
             # a tightening is phased in (banks cut lines over about a year: 35% of the remaining gap each quarter)
@@ -1589,22 +1652,25 @@ class Macro:
             self.cred_target *= mp.cred_shock_rho
             self.cred_fac = 1.0 - self.cred_shock
         lim_h = hp.cred_lim * self.cred_fac
-        cw, _, _, _, _ = solve_accounts(m_cash[w] - d_now, self.b[w], self.a[w] + d_now, self.yhat[w], G_j[w], P, rb, ra, hp, False, r_c=r_c, lim=lim_h)
+        cw, _, _, _, _ = solve_accounts(m_cash[w] - d_now, self.b[w], self.a[w] + d_now, self.yhat[w], G_j[w], P, rb_v[w], ra, hp, False, r_c=(r_c_v[w] if r_c_v is not None else None), lim=lim_h)
         c[w], da[w] = cw, d_now
         db[w] = m_cash[w] - d_now - P * cw                    # budget closes exactly
         r = ~work
         wd = self.a[r] / (hp.J - self.age[r])
-        cr, _, _, _, _ = solve_accounts(m_cash[r] + wd, self.b[r], self.a[r], self.yhat[r], G_j[r], P, rb, ra, hp, False, r_c=r_c, lim=lim_h)
+        cr, _, _, _, _ = solve_accounts(m_cash[r] + wd, self.b[r], self.a[r], self.yhat[r], G_j[r], P, rb_v[r], ra, hp, False, r_c=(r_c_v[r] if r_c_v is not None else None), lim=lim_h)
         c[r], da[r] = cr, -wd
         db[r] = m_cash[r] + wd - P * cr
         self._chargeoff = 0.0
         if r_c is not None:
             # a household that cannot get back within its credit line defaults on the excess; the bank charges it off
-            fl_h = -lim_h * self.yhat / (1 + r_c)
+            fl_h = -lim_h * self.yhat / (1 + r_c_v)
             exc = np.maximum(fl_h - db, 0.0)
             db = db + exc
             self._chargeoff = float(exc.sum())
+            self._chg_h = exc
             self.E_B -= self._chargeoff
+            if mp.multi_bank:
+                self.E_k -= np.bincount(self.bank_h, exc, mp.NB)
 
         # 6. goods market at posted prices; households and investing firms buy from the same firms
         S_h = P * c
@@ -1709,11 +1775,13 @@ class Macro:
                 # costs plus forgone interest is sqrt(cost x spending / (2 rb)); at rb = 0 everything sits in checking
                 spend = np.maximum(S_h * fill_h, 1e-12)
                 self._spend_last = spend
-                M_chk = np.minimum(db, np.sqrt(mp.c_tr * self.yhat * spend / (2 * max(rb, 1e-9)))) if rb > 0 else db
+                M_chk = np.where(rb_v > 0, np.minimum(db, np.sqrt(mp.c_tr * self.yhat * spend / (2 * np.maximum(rb_v, 1e-9)))), db)
                 sav = np.maximum(db - M_chk, 0.0)
                 debt_h = np.maximum(-db, 0.0) if r_c is not None else np.zeros_like(db)   # credit-line balances
-                int_hh = rb * sav.sum() - (r_c or 0.0) * debt_h.sum()
-                self.b = db + rb * sav - (r_c or 0.0) * debt_h
+                rc0 = r_c_v if r_c_v is not None else np.zeros(N)
+                self._int_h = rb_v * sav - rc0 * debt_h             # interest each household receives (pays if < 0)
+                int_hh = float(self._int_h.sum())
+                self.b = db + rb_v * sav - rc0 * debt_h
                 self._hh_debt = float(debt_h.sum())
                 self._chk_share = float(M_chk.sum() / max(db.sum(), 1e-12))
             else:
@@ -1783,9 +1851,30 @@ class Macro:
         self._remit = remit
         # bank
         prof_B = int_f.sum() + bank_int - int_hh - m_int.sum() - loss.sum() - f_int + self._int_inst
-        self.E_B += prof_B
-        div_B = max(0.0, self.E_B - mp.cap_B * self.loan.sum())       # Treasuries carry a zero risk weight
-        self.E_B -= div_B
+        if mp.multi_bank:
+            # each bank's income statement: its own customers' interest and losses, plus its share of bill, reserve
+            # and interbank interest (positions held during the quarter) and of the fund's deposit interest
+            NB = mp.NB
+            Dk_prev = np.maximum(self._Dk_prev, 1e-12) if getattr(self, "_Dk_prev", None) is not None else np.ones(NB)
+            base = self.i_bill * self.Bb_k + ior * self.res_k
+            bint_k = base + (bank_int - base.sum()) * Dk_prev / Dk_prev.sum()
+            prof_k = (np.bincount(self.bank_f, int_f - loss - m_int, NB)
+                      - np.bincount(self.bank_h, getattr(self, "_int_h", np.zeros(N)), NB)
+                      + np.bincount(self.bank_h, self._int_i_h, NB)
+                      + bint_k - f_int * Dk_prev / Dk_prev.sum())
+            self.E_k += prof_k
+            loans_fk = np.bincount(self.bank_f, self.loan, NB)
+            div_k = np.maximum(0.0, self.E_k - mp.cap_B * loans_fk)
+            self.E_k -= div_k
+            div_B = float(div_k.sum())
+            # losses on each bank's own loans: the bank's loan rate prices its own loss history
+            lr_k = np.bincount(self.bank_f, loss, NB) / np.maximum(loans_fk, 1e-12)
+            self.loss_k = (1 - mp.g_loss) * self.loss_k + mp.g_loss * lr_k
+            self.E_B = float(self.E_k.sum())
+        else:
+            self.E_B += prof_B
+            div_B = max(0.0, self.E_B - mp.cap_B * self.loan.sum())       # Treasuries carry a zero risk weight
+            self.E_B -= div_B
         # fund values each firm at trailing earnings capitalized at its assumed return: the long-run deposit rate
         # it has observed (discounted average of its own experience) plus its published equity premium
         if mp.fund_flow:
@@ -1861,6 +1950,8 @@ class Macro:
             self.div_pending[dead] = 0.0; self.b[dead] = 0; self.a[dead] = 0
         if mp.durables and getattr(self, "L_inst", None) is not None:
             self.E_B -= self.L_inst[dead].sum()                # installment balances of the deceased are charged off
+            if mp.multi_bank:
+                self.E_k -= np.bincount(self.bank_h[dead], self.L_inst[dead], mp.NB)
             self.L_inst[dead] = 0.0; self.n_inst[dead] = 0; self.pay_inst[dead] = 0.0
             self.dur[dead] = 0.5 * mp.dur_theta * self.yhat[dead] / max(P_g, 1e-12)
         self.age[dead] = 0; self.emp[dead] = True
@@ -1954,6 +2045,33 @@ class Macro:
             self.F_B -= dfb; self.Fc += dfb
         self.DW = max(self.TGA - self.SOMA, 0.0)
         self.R_res = self.SOMA + self.DW - self.TGA
+        if mp.multi_bank:
+            NB = mp.NB
+            # a bank with negative equity is recapitalized by its owner (the fund) for now
+            neg = np.minimum(self.E_k, 0.0)
+            if neg.sum() < 0:
+                self._recap = float(-neg.sum()); self.Fc -= self._recap; self.E_k -= neg; self.E_B = float(self.E_k.sum())
+            # competition: a share of customers re-shop and choose a bank by logit on posted rates (balances move
+            # with them; the payment between banks settles in reserves)
+            sh_ = self.rng.random(N) < mp.sw_h
+            if sh_.any():
+                pd_ = np.exp(mp.a_D * (self.rd_k - self.rd_k.max())); pd_ /= pd_.sum()
+                self.bank_h[sh_] = self.rng.choice(NB, sh_.sum(), p=pd_)
+            sf_ = self.rng.random(F) < mp.sw_f
+            if sf_.any():
+                pl_ = np.exp(-mp.a_L * (self.rL_k - self.rL_k.min())); pl_ /= pl_.sum()
+                self.bank_f[sf_] = self.rng.choice(NB, sf_.sum(), p=pl_)
+            # positions held next quarter: deposits, loans, bills (dealer holdings split by deposits), and the
+            # reserve position (lent to or borrowed from other banks at IOR)
+            Dk = (np.bincount(self.bank_h, np.maximum(self.b, 0.0) + self.div_pending, NB)
+                  + np.bincount(self.bank_f, np.maximum(self.m, 0.0), NB))
+            Dk = Dk + self.Fc * Dk / max(Dk.sum(), 1e-12)
+            Lk = (np.bincount(self.bank_f, self.loan, NB) + np.bincount(self.bank_h, np.maximum(-self.b, 0.0), NB)
+                  + (np.bincount(self.bank_h, self.L_inst, NB) if getattr(self, "L_inst", None) is not None else 0.0))
+            Bb = max(self.Bills - self.SOMA - self.F_B, 0.0)
+            self.Bb_k = Bb * Dk / max(Dk.sum(), 1e-12)
+            self.res_k = Dk + self.E_k - Lk - self.Bb_k
+            self._Dk_prev = Dk
         self.t += 1
         if not record:
             return None
