@@ -32,6 +32,7 @@ Code for a macro model that is computed one quarter at a time. Every agent decid
 - **Newsvendor value of a worker's output.** Output is sold if demand exceeds the stock and otherwise carried at its inventory value, so goods firms hoard labor and perishable services do not.
 - **Sector price indexes.** Firms benchmark prices against their own sector's published index; machines are valued at the goods index.
 
+- **Heterogeneous firms.** Each firm has persistent efficiency (cost) and appeal (demand) that drift over time; a firm with a year of losses exits and an entrant takes its slot with new draws (Hopenhayn). Firms read their market position off their own customer base. Firm size tracks efficiency and appeal, efficient firms charge less, and about 5% of firms exit a year.
 - **Household credit lines** (1.5 quarters of income at the loan rate + 2% a quarter; balances above the line are charged off): 34% of people carry debt, debt is 0.13 of quarterly GDP.
 - **External finance premium.** Each firm's loan rate is priced for expected loss, with default risk rising as interest coverage weakens (Bernanke-Gertler; Gilchrist et al. 2017).
 

@@ -109,7 +109,7 @@ class MParams:
         self.g_sh = 0.02            # gain of that regression (discounted least squares)
         self.w_sh = 1.0             # prior weight on the logit slope, in quarters of typical data
         self.rho_c = 0.5            # customer market: share of buyers who re-shop each quarter (1 = all re-shop, no customer base)
-        self.menu_cost = 0.03       # state-dependent pricing: change price when the expected gain exceeds this share of revenue; calibrated to the frequency of price changes (about 40% a quarter), as in Golosov-Lucas and Nakamura-Steinsson (direct measures, Zbaracki et al. 2004: about 1.2%); 0: fixed review_p
+        self.menu_cost = 0.05       # state-dependent pricing: change price when the expected gain exceeds this share of revenue; calibrated to the frequency of price changes (about 40% a quarter), as in Golosov-Lucas and Nakamura-Steinsson (direct measures, Zbaracki et al. 2004: about 1.2%); 0: fixed review_p
         self.k_full = False         # capital decision uses the wage-based labor cost (as inventory)
         self.v_full = False         # inventory valued at production cost at the wage (recruiting costs are not inventoriable), not including marginal hiring cost
         self.v_marginal = True      # unsold stock valued at the marginal cost of replacing it (internal labor cost), not at a price-level-based unit cost
@@ -184,15 +184,19 @@ class MParams:
         self.ui_quarters = 2
         self.kappa_med = 0.1
         self.kappa_sd = 1.0
-        self.firm_eff = False
+        self.firm_eff = True
         self.rho_a = 0.95
         # exit and entry (Hopenhayn 1992): a firm whose smoothed earnings stay negative exit_q quarters in a row (no
         # going-concern value) exits; an entrant
         # takes over its slot and assets (as in a bankruptcy sale) with a new efficiency draw from the stationary
         # distribution, a fresh credit assessment, and a share entry_cust of the exiting firm's customers
         self.exit_q = 4
+        self.cust_belief = True    # market position from the firm's own customer base
+        self.sd_q = 0.5             # firm appeal (quality, reputation): persistent log demand shifter in buyers' choices,
+                                    # AR(1) with persistence rho_a; size dispersion is mostly demand (Foster, Haltiwanger
+                                    # and Syverson 2008)
         self.entry_cust = 0.5
-        self.sd_a = 0.25
+        self.sd_a = 0.15
         self.services = True
         self.s_sv = 0.25
         self.min_wage = False
@@ -301,6 +305,7 @@ class Macro:
         self.AK = np.full(F, y0 / K0 / (0.8 if mp.utilization else 1.0)) if mp.tech else None
         self.AL = np.full(F, y0 / L0) if mp.tech else None
         self.a_eff = np.zeros(F)                     # log firm efficiency
+        self.q_app = mp.sd_q * self.rng.standard_normal(F) if mp.firm_eff else np.zeros(F)   # log firm appeal
         self.kappa_s = mp.kappa_med * np.exp(mp.kappa_sd * self.rng.standard_normal(hp.N))   # personal search cost
         self.ui_q = np.zeros(hp.N, int)              # quarters of UI left
         self.z0 = self.z.copy(); self.uq = np.zeros(hp.N, int)   # original skill; quarters without a job
@@ -1168,6 +1173,8 @@ class Macro:
             self.a_eff = self.a_eff + da
             self.AK = self.AK * np.exp(da); self.AL = self.AL * np.exp(da)
             self.AKn = self.AKn * np.exp(da); self.ALn = self.ALn * np.exp(da)
+            if mp.sd_q > 0:
+                self.q_app = mp.rho_a * self.q_app + mp.sd_q * np.sqrt(1 - mp.rho_a ** 2) * self.rng.standard_normal(F)
         if mp.tech and mp.exo_g > 0:                          # diagnostic: smooth exogenous labor-augmenting growth
             ge = mp.exo_g * min(1.0, self.t / mp.exo_ramp) if mp.exo_ramp else mp.exo_g
             self.AL = self.AL * np.exp(ge); self.poolL = self.poolL * np.exp(ge)
@@ -1588,7 +1595,7 @@ class Macro:
         secsum = lambda x: np.bincount(sec, x, minlength=nsec)[sec]  # sum over the firm's sector
         avail = (self.inv + np.where(self.to_order, y, 0.0)) if mp.prod_lag else self.inv + y
         # buyers choose among firms by random utility (logit): shares proportional to (p/P)^(-eps) x taste
-        wts = (self.p / P) ** (-mp.eps) * np.exp(mp.taste_sd * self.rng.standard_normal(F))
+        wts = (self.p / P) ** (-mp.eps) * np.exp(self.q_app + mp.taste_sd * self.rng.standard_normal(F))
         if mp.rho_c < 1:
             # customer market: a share rho_c of buyers shop around (logit); the rest stay with their seller
             cust_old = self.cust.copy()
@@ -1722,6 +1729,8 @@ class Macro:
                 self.cust = self.cust + np.where(ex, 0.0, tot * keep / np.maximum(np.bincount(self.sec, keep, minlength=2)[self.sec], 1e-12))
                 self.cov = np.where(ex, mp.cov_ref, self.cov)
                 self.dq = np.where(ex, 0, self.dq)
+                if mp.sd_q > 0:
+                    self.q_app = np.where(ex, mp.sd_q * self.rng.standard_normal(F), self.q_app)
         # owners are paid the quarter's accounting profit (book depreciation at historical cost); remaining cash
         # repays loans, since holding deposits at rb while owing at rL loses money
         profit = revenue - wb_f - int_f + m_int - self._dep * self.Kb
@@ -1845,6 +1854,10 @@ class Macro:
             # own position: the part of the surprise not explained by the size of the market (published afterwards)
             err_a = np.log(np.maximum(q_dem, 1e-12)) + e_f * np.log(self.p / self.Pref_used) - np.log(S_tot / self.Pref_all_used) - self.ln_a
             self.ln_a += mp.g_A * err_a
+            if mp.cust_belief and mp.rho_c < 1:
+                # a firm knows its own customer base (its customer records): its market position is that base's share
+                # of total final spending, not an average learned from noisy sales
+                self.ln_a = np.log(np.maximum(self.cust * self._Ssec / max(S_tot, 1e-12), 1e-12))
             self.sig2 = np.maximum((1 - mp.g_sig) * self.sig2 + mp.g_sig * err ** 2, 1e-4)
         # published real growth of final sales (a national-accounts statistic); firms expect their own demand to grow
         # with it, so the level belief carries a trend (discounted least squares on a level plus a published trend)

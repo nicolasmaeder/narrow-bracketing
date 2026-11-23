@@ -34,7 +34,7 @@ class Params:
         self.eps_B = 0.0        # buffer valued as v(x + eps_B): finite marginal value at zero lets households run out of cash
         self.G25 = 0.25         # retirement target at 25, quarters of income (Fidelity's schedule starts at 30)
         self.need = 0.33        # retirement target: share of reference income needed per remaining retired quarter
-        self.sep, self.find = 0.055, 0.45         # job loss / job finding per quarter (sep: layoffs and quits into unemployment, JOLTS about 1.2%/month layoffs; most separated workers find a job within the quarter)
+        self.sep, self.find = 0.045, 0.45         # job loss / job finding per quarter (sep: layoffs and quits into unemployment, JOLTS about 1.2%/month layoffs; most separated workers find a job within the quarter)
         self.ui = 0.5           # unemployment benefit, share of own wage
         self.pension = 0.4      # pension, share of reference income at retirement
         self.g = 0.05           # reference-income gain
