@@ -186,6 +186,12 @@ class MParams:
         self.kappa_sd = 1.0
         self.firm_eff = False
         self.rho_a = 0.95
+        # exit and entry (Hopenhayn 1992): a firm whose smoothed earnings stay negative exit_q quarters in a row (no
+        # going-concern value) exits; an entrant
+        # takes over its slot and assets (as in a bankruptcy sale) with a new efficiency draw from the stationary
+        # distribution, a fresh credit assessment, and a share entry_cust of the exiting firm's customers
+        self.exit_q = 4
+        self.entry_cust = 0.5
         self.sd_a = 0.25
         self.services = True
         self.s_sv = 0.25
@@ -304,6 +310,8 @@ class Macro:
         self.cred_shock = 0.0
         self.cred_target = 0.0
         self.cov = np.full(F, 4.0)                   # firms' interest coverage as the bank sees it (smoothed)
+        self.dq = np.zeros(F, int)                   # consecutive quarters with a loan write-down
+        self._n_exit = 0
         if mp.firm_eff and mp.tech:
             self.a_eff = mp.sd_a * self.rng.standard_normal(F)
             self.AK = self.AK * np.exp(self.a_eff); self.AL = self.AL * np.exp(self.a_eff)
@@ -1697,6 +1705,23 @@ class Macro:
         nw = P_g * self.K + v * self.inv + self.m - self.loan
         loss = np.where(nw < 0, -nw, 0.0)
         self.loan -= loss
+        self._n_exit = 0
+        if mp.firm_eff and mp.tech:
+            ex = self.dq >= mp.exit_q
+            if ex.any():
+                self._n_exit = int(ex.sum())
+                a_new = mp.sd_a * self.rng.standard_normal(F)
+                da = np.where(ex, a_new - self.a_eff, 0.0)
+                self.a_eff = self.a_eff + da
+                self.AK = self.AK * np.exp(da); self.AL = self.AL * np.exp(da)
+                self.AKn = self.AKn * np.exp(da); self.ALn = self.ALn * np.exp(da)
+                lostc = np.where(ex, (1 - mp.entry_cust) * self.cust, 0.0)   # customers the exit loses
+                self.cust = self.cust - lostc
+                tot = np.bincount(self.sec, lostc, minlength=2)[self.sec]
+                keep = np.where(ex, 0.0, self.cust)
+                self.cust = self.cust + np.where(ex, 0.0, tot * keep / np.maximum(np.bincount(self.sec, keep, minlength=2)[self.sec], 1e-12))
+                self.cov = np.where(ex, mp.cov_ref, self.cov)
+                self.dq = np.where(ex, 0, self.dq)
         # owners are paid the quarter's accounting profit (book depreciation at historical cost); remaining cash
         # repays loans, since holding deposits at rb while owing at rL loses money
         profit = revenue - wb_f - int_f + m_int - self._dep * self.Kb
@@ -1704,6 +1729,8 @@ class Macro:
         div_f = np.clip(profit, 0.0, np.maximum(self.m, 0.0))
         self.m -= div_f
         self.Ehat = (1 - mp.g_earn) * self.Ehat + mp.g_earn * profit
+        self.Eq = (1 - 0.25) * getattr(self, "Eq", profit) + 0.25 * profit      # last year's earnings (smoothed)
+        self.dq = np.where(self.Eq < 0, self.dq + 1, 0)
         # government: interest on its account
         g_int = (rb if self.g > 0 else i) * self.g
         # bank
