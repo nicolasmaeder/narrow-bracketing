@@ -215,6 +215,12 @@ class MParams:
         # (dur_theta quarters of reference income at goods prices) when the service value of closing the gap, psi x
         # gap share x income, covers the user cost (borrowing rate + depreciation) of the gap plus a fixed cost
         # dur_F x income: (S,s) under fixed adjustment costs (Grossman and Laroque 1990). Higher rates widen the band
+        # scarring: skill decays while unemployed beyond scar_q quarters and recovers on the job up to its original level
+        # (displaced workers' earnings losses, Davis and von Wachter 2011)
+        self.scar = False
+        self.scar_q = 2
+        self.scar_d = 0.01
+        self.scar_r = 0.02
         self.durables = False
         self.dur_theta = 3.0
         self.dur_delta = 0.05
@@ -290,6 +296,7 @@ class Macro:
         self.a_eff = np.zeros(F)                     # log firm efficiency
         self.kappa_s = mp.kappa_med * np.exp(mp.kappa_sd * self.rng.standard_normal(hp.N))   # personal search cost
         self.ui_q = np.zeros(hp.N, int)              # quarters of UI left
+        self.z0 = self.z.copy(); self.uq = np.zeros(hp.N, int)   # original skill; quarters without a job
         self.search = np.ones(hp.N, bool)
         self.f_pub = 0.5                             # published job-finding rate of searchers
         self.cred_fac = 1.0                          # banks' credit standards: share of normal credit lines offered
@@ -1447,6 +1454,11 @@ class Macro:
         # 5. households
         wage_h = np.where(emp, (1 - tau) * (self.w[np.maximum(self.job, 0)] if mp.wage_posting else W)
                           * (self.earn_fac(self.job) if mp.weiss else self.z), 0.0)
+        if mp.scar:
+            ne_ = work & (self.job < 0)
+            self.uq = np.where(ne_, self.uq + 1, 0)
+            self.z = np.where(ne_ & (self.uq > mp.scar_q), self.z * (1 - mp.scar_d),
+                              np.where(~ne_, np.minimum(self.z0, self.z * (1 + mp.scar_r)), self.z))
         if mp.olf:
             lost = (job0 >= 0) & (self.job < 0) & work
             self.ui_q = np.where(emp, 0, np.where(lost, mp.ui_quarters, np.maximum(self.ui_q - 1, 0)))
@@ -1833,6 +1845,8 @@ class Macro:
             self.W = W * (1 + mp.pi_star) if mp.fix_wage else max(W_new, mp.lam_W * W)
         if not mp.retiree_income:
             self.yhat = np.where(self.age >= hp.J_W, self.yhat * self.W / W, self.yhat)   # retirees: wage-indexed
+        if getattr(self, 'z0', None) is not None:
+            self.z[dead] = self.z0[dead]; self.uq[dead] = 0      # a new entrant starts with the original skill
         self.yhat[dead] = self.W * self.z[dead]
         uc_rec = float(np.mean(self.unit_cost(W, self.P_prev * (r_own + mp.delta))))
         self.P_prev = P_paid

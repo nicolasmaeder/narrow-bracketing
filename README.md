@@ -35,13 +35,15 @@ Code for a macro model that is computed one quarter at a time. Every agent decid
 - **Household credit lines** (1.5 quarters of income at the loan rate + 2% a quarter; balances above the line are charged off): 34% of people carry debt, debt is 0.13 of quarterly GDP.
 - **External finance premium.** Each firm's loan rate is priced for expected loss, with default risk rising as interest coverage weakens (Bernanke-Gertler; Gilchrist et al. 2017).
 
-Long run (4 seeds, menu cost 0.035 and fixed neutral rate; inflation is 2.1-2.2% with neutral-rate learning): unemployment 4.7-5.6%, inflation 1.4-1.5%, growth about 1.9%, price over marginal cost 1.58, wage share 0.45, K/Y 1.2, wealth/GDP 7.0. Earnings: p90/p50 = 2.0 (data about 2), p10/p50 = 0.8 (data about 0.5), pooled service pay 0.82 x the median.
+Long run (4 seeds, quarters 300-600): unemployment 4.5-4.9% (s.d. 0.9-1.6), inflation 2.5-2.9%, growth 1.8-2.0%, price over marginal cost 1.6, wage share 0.43-0.46, K/Y 1.15-1.25, wealth/GDP 6.5, prices change 35-38% of quarters. Earnings: p90/p50 = 2.0 (data about 2), p10/p50 = 0.8 (data about 0.5), pooled service pay 0.82 x the median.
 
 20% asset bust (16 seeds, common random numbers): unemployment +4.5 points at quarter 8, back to baseline by quarter 16; output -2.8% at its trough; investment -9%; policy rate cut about 4 points; price level -10% (still too much deflation; core prices fell about 4% relative to trend in 2008-11).
 
 Experiments (8 seeds): a 1-point rate hike leaves consumption unchanged on impact (borrowers offset savers) but moves output only about 0.1%, because housing and durables are missing; a stimulus check worth 1% of annual GDP raises consumption 0.3% on impact, and 86% of it is spent within 8 quarters; a phased-in 50% cut in household credit lines raises unemployment 0.8 points for two years.
 
 Household credit lines are on (1.5 quarters of income at the loan rate + 2% a quarter; balances above the line are charged off): 34% of people carry debt, debt is 0.13 of quarterly GDP.
+
+2008 scenario (20% asset bust plus a phased-in halving of household credit lines, 16 seeds): unemployment +4.65 points at quarter 8 (data: about +5), output -3%, investment -9.5%, policy rate cut 4.8 points; but recovery takes about two years (data: about six) and the price level falls 12% (data: core about -4% relative to trend).
 
 Options built but off: consumer durables with installment loans (`durables`: (S,s) upgrades against the user cost, 20-quarter loans within a 15% payment-to-income rule; a 1-point rate hike then lowers output 0.4-0.6% in the first three quarters, against about 0.05% without; the start-up from an arbitrary initial state takes about 250 quarters), labor hoarding (`hoard`), minimum wage (`min_wage`, does not bind while service pay is 0.82 x the median), firm-specific efficiency (`firm_eff`; with 20 firms idiosyncratic shocks become aggregate), variable utilization.
 
