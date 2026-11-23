@@ -155,6 +155,11 @@ class MParams:
         self.ior_spread = 0.0
         self.dr_spread = 0.000625   # 0.25 points a year above the target
         # government purchases of goods and services: a share of trend nominal GDP, split between the sectors
+        # Treasury auctions: the bank is the primary dealer; its alternative is reserves at IOR, so it bids the bill
+        # yield at IOR + dealer_margin and the auction clears there. The retirement fund buys bills from the dealer for
+        # the safe part of its portfolio (share fund_bills of its value)
+        self.dealer_margin = 0.0
+        self.fund_bills = 0.15
         self.g_share = 0.17
         self.g_sv = 0.5
         self.deficit_rule = True    # tax rule allows the deficit that keeps debt at its target share of growing GDP
@@ -327,6 +332,8 @@ class Macro:
         self.cred_shock = 0.0
         self.cred_target = 0.0
         self.Bills = self.SOMA = self.R_res = self.DW = self.TGA = 0.0   # Treasury bills, Fed holdings, reserves, discount loans, TGA
+        self.F_B = 0.0                                # bills held by the retirement fund
+        self.i_bill = 0.0
         self.cov = np.full(F, 4.0)                   # firms' interest coverage as the bank sees it (smoothed)
         self.dq = np.zeros(F, int)                   # consecutive quarters with a loan write-down
         self._n_exit = 0
@@ -1116,7 +1123,7 @@ class Macro:
         (deposits + equity + discount loans - loans - its Treasury bills) minus the reserves on the Fed's balance
         sheet (bills held + discount loans - TGA). self.g is the Treasury's net position (TGA - bills), so the
         difference reduces to the expression below."""
-        deposits = self.b.sum() + self.m.sum() + self.div_pending.sum() + self.g + self.Fc
+        deposits = self.b.sum() + self.m.sum() + self.div_pending.sum() + self.g + self.Fc + getattr(self, 'F_B', 0.0)
         if not self.mp.fund:
             deposits += self.a.sum()
         return deposits + self.E_B - self.loan.sum() - (self.L_inst.sum() if getattr(self, 'L_inst', None) is not None else 0.0)
@@ -1767,12 +1774,15 @@ class Macro:
         # earns bill and discount-loan interest, pays IOR, and remits the rest to the Treasury (positions held during
         # the quarter, set at the end of last quarter)
         ior, dr = i + mp.ior_spread, i + mp.dr_spread
-        bank_int = i * (self.Bills - self.SOMA) + ior * self.R_res - dr * self.DW
-        remit = i * self.SOMA + dr * self.DW - ior * self.R_res
-        g_int = -i * self.Bills + remit                       # = -bank_int: the three balance sheets close
+        ib = ior + mp.dealer_margin                           # auction stop-out yield: the dealer's bid
+        self.i_bill = ib
+        bank_int = ib * (self.Bills - self.SOMA - self.F_B) + ior * self.R_res - dr * self.DW
+        fund_int = ib * self.F_B
+        remit = ib * self.SOMA + dr * self.DW - ior * self.R_res
+        g_int = -ib * self.Bills + remit                      # = -(bank_int + fund_int): the balance sheets close
         self._remit = remit
         # bank
-        prof_B = int_f.sum() + max(-g_int, 0.0) - int_hh - m_int.sum() - max(g_int, 0.0) - loss.sum() - f_int + self._int_inst
+        prof_B = int_f.sum() + bank_int - int_hh - m_int.sum() - loss.sum() - f_int + self._int_inst
         self.E_B += prof_B
         div_B = max(0.0, self.E_B - mp.cap_B * self.loan.sum())       # Treasuries carry a zero risk weight
         self.E_B -= div_B
@@ -1791,8 +1801,12 @@ class Macro:
         if mp.fund:
             # fund collects dividends, keeps cash for withdrawals, invests the rest in its firms (or raises cash
             # from them): holding deposits at rb while its firms borrow at rL loses money
-            self.Fc += div_f.sum() + div_B
+            self.Fc += div_f.sum() + div_B + fund_int
             need_c = mp.fund_cash_q * (-da[da < 0].sum())
+            # safe part of the portfolio: bills bought from (or sold to) the dealer, up to what the dealer holds
+            nav_b = V.sum() + self.E_B + self.Fc + self.F_B
+            fb_new = float(np.clip(mp.fund_bills * nav_b, 0.0, max(self.Bills - self.SOMA, 0.0)))
+            self.Fc -= fb_new - self.F_B; self.F_B = fb_new
             x = self.Fc - need_c
             if mp.fund_flow:
                 # members' net purchases of fund units (contributions less withdrawals) move the posted multiple
@@ -1806,7 +1820,7 @@ class Macro:
             self.m += x * wv; self.Fc -= x
             short = np.maximum(0.0, -self.m)
             self.loan += short; self.m += short
-            nav = V.sum() + self.E_B + self.Fc
+            nav = V.sum() + self.E_B + self.Fc + self.F_B
             self.a = a_pre * nav / a_pre.sum()
         elif mp.div_to_fund:                                 # diagnostic: profits accrue to retirement balances
             self.a += (div_f.sum() + div_B) * self.a / self.a.sum()
@@ -1935,6 +1949,9 @@ class Macro:
         self.Bills = max(mp.tga_target * GDP_a_ - self.g, 0.0)
         self.TGA = self.g + self.Bills
         self.SOMA = float(np.clip(mp.res_target * GDP_a_ + self.TGA, 0.0, self.Bills))
+        if self.F_B > self.Bills - self.SOMA:                 # the Fed's purchases also come out of the fund's bills
+            dfb = self.F_B - max(self.Bills - self.SOMA, 0.0)
+            self.F_B -= dfb; self.Fc += dfb
         self.DW = max(self.TGA - self.SOMA, 0.0)
         self.R_res = self.SOMA + self.DW - self.TGA
         self.t += 1
