@@ -43,7 +43,7 @@ class MParams:
         self.eps = 7.7              # buyers' elasticity of substitution across firms (logit choice)
         self.taste_sd = 0.10        # buyers' idiosyncratic taste shocks across firms (sd of log weight)
         self.inv_decay = 0.03       # inventory carrying loss per quarter (spoilage, obsolescence)
-        self.inv_decay_sv = 0.9     # services: perishable
+        self.inv_decay_sv = 0.99    # services: produced to order within the quarter, unused capacity is lost
         self.mrp_stock = True       # a hire's output adds to the stock carried in (not to zero stock)
         self.phi_K = 2.0            # convex capital adjustment cost (x P K x (dK/K)^2 / 2)
         self.g_A = 0.10             # firms' forgetting rate on own-demand evidence (level)
@@ -71,9 +71,9 @@ class MParams:
         self.i_star = 0.0125        # neutral policy rate per quarter (5% a year)
         self.pi_star = 0.005        # inflation target per quarter (2% a year)
         self.u_star = 0.05
-        self.phi_pi, self.phi_u = 1.5, 0.1
+        self.phi_pi, self.phi_u = 1.5, 0.25   # Taylor (1993): 0.5 on the output gap, about 1 on the unemployment gap (Okun), 0.25 per quarter
         self.zlb = True             # lower bound on the policy rate (off only in diagnostics)
-        self.rho_i = 0.95           # interest-rate smoothing
+        self.rho_i = 0.85           # interest-rate smoothing (quarterly; Clarida, Gali and Gertler 2000 estimate about 0.8)
         # wages (placeholder rule): indexation to observed inflation + response to unemployment, downward rigid
         self.phi_W = 0.05
         self.w_index = 0.5          # indexation to observed inflation; the rest anchored at the target
@@ -175,6 +175,7 @@ class MParams:
         self.kaitz = 0.45
         self.mw_review = 4
         self.n_piece = 5            # firms paying by measured output
+        self.pool_outside = False      # pooled firms benchmark against their workers' pay at output-paying firms
         self.pool_own_market = False   # pooled firms compare their pay with other pooled firms (service jobs with service jobs)
         self.piece_own_market = True   # output-paying firms compare their pay with other output-paying firms
         self.commission = 0.0       # > 0: output-paying firms pay this share of the value of output per unit of effective labor
@@ -257,6 +258,7 @@ class Macro:
         self.n_sec = np.bincount(self.sec, minlength=2).astype(float)
         # services cannot be stored: unsold service capacity is mostly lost (decay inv_decay_sv)
         self.decay = np.where(self.sec == 1, mp.inv_decay_sv, mp.inv_decay)
+        self.to_order = (self.sec == 1) & mp.prod_lag    # services: staffed and sold within the quarter
         self.zbar = float(self.z[self.age < self.hp.J_W].mean())      # published average skill of the labor force
         self.W_min = 0.0                                            # minimum earnings per worker (0: none yet)
         self.med_earn = None                                         # published median earnings of the employed
@@ -282,6 +284,7 @@ class Macro:
         self.gS = mp.pi_star + (mp.g_N / mp.pL if mp.tech else 0.0)   # published growth of nominal final sales (discounted average)
         self.sig2 = np.full(F, mp.taste_sd ** 2)  # belief: variance of log demand surprises
         self.inv = np.full(F, (1.1 if mp.prod_lag else 0.1) * y0)
+        self.inv[self.to_order] = 0.1 * y0
         self.loan = np.zeros(F) if mp.fund else np.full(F, P0 * K0)   # with the fund, firms start equity-financed
         self.Kb = np.full(F, P0 * K0)            # book value of capital (historical cost)
         self.m = np.zeros(F)
@@ -588,7 +591,12 @@ class Macro:
                 # hand add nothing (they find it sold out), so a firm that is sold out gains nothing by cutting its price
                 sh_cap = S * p / np.maximum(self._Ssec[:, None], 1e-12)   # spending share the stock on hand can serve
                 won = np.minimum(mp.rho_c * Lp, np.maximum(sh_cap - (1 - mp.rho_c) * sh, 0.0))
-                val = val + won * clv - mp.stockout_loss * (1 - served) * sh * clv
+                # a customer lost to a stock-out is worth the margin it would bring at normal prices (the long-run
+                # Lerner margin implied by buyers' choices), not at today's price: otherwise pricing below cost would
+                # look like a way to make lost customers worthless
+                m_norm = 1.0 / self.elast(short=False)[:, None]
+                clv_n = self._Ssec[:, None] * m_norm / ((rL[:, None] if np.ndim(rL) else rL) + mp.rho_c)
+                val = val + won * clv - mp.stockout_loss * (1 - served) * sh * clv_n
             return S, mu, val
 
         p = uc[:, None] * np.exp(np.linspace(np.log(0.9), np.log(4.0), 121))[None, :]   # wide enough never to bind
@@ -1102,7 +1110,13 @@ class Macro:
                 if mp.weiss:                                  # pooled firms also look at published pay at output-paying firms
                     We_piece = self.Wbar_obs(self.piece) * (1 + g_mkt) ** 2.5
                     if mp.piece_own_market:                   # output-paying firms benchmark against each other only
-                        We = np.where(self.piece, self.Wbar_obs(self.piece), self.Wbar_obs(~self.piece) if mp.pool_own_market else self.Wbar_obs()) * (1 + g_mkt)
+                        if mp.pool_outside:
+                            # pooled firms benchmark against their workers' outside option: what workers of their
+                            # average skill (observed output per head) would earn paid by output, per head
+                            We_pool_ = self.Wbar_obs(self.piece) * self.qbar / self.zbar
+                        else:
+                            We_pool_ = self.Wbar_obs(~self.piece) if mp.pool_own_market else self.Wbar_obs()
+                        We = np.where(self.piece, self.Wbar_obs(self.piece), We_pool_) * (1 + g_mkt)
                 w_des = self.pay_review(We * (1 + g_mkt) ** 1.5, qf, Q, r_own, We_piece, self.gL_plan)
                 self._cut_wanted = w_des < self.w                      # the firm would cut pay if workers accepted it
                 w_post = np.maximum(self.w, w_des)                     # no nominal cuts
@@ -1203,7 +1217,12 @@ class Macro:
             if mp.flow_price:
                 self.p, _, mu_s, v = self.price_and_stock(om_e, r_own)
             else:
-                self.p, S, mu_s, v = self.price_and_stock(W_firm, r_own, S_cap=self.inv, W_int=om_e if mp.v_full else W_firm)
+                Scap_ = self.inv
+                if self.to_order.any():
+                    # services are made this quarter: what can be served is the output of the workforce it expects
+                    cap_to = cap if (mp.wage_posting and mp.cap_aware) else self.inv + self.prod(np.maximum(L_prev, 0.0))
+                    Scap_ = np.where(self.to_order, cap_to, self.inv)
+                self.p, S, mu_s, v = self.price_and_stock(W_firm, r_own, S_cap=Scap_, W_int=om_e if mp.v_full else W_firm)
             sd = np.sqrt(self.sig2)
             self._mu_lag, self._inv_lag = mu_s.copy(), self.inv.copy()
             d2 = (np.log(mu_s / np.maximum(self.inv, 1e-12)) - sd ** 2 / 2) / sd
@@ -1227,9 +1246,19 @@ class Macro:
             else:
                 S_next = self.stock_target(W_firm, self.p, mu_s, v, carry, sd * np.sqrt(2))
                 y_plan = np.maximum(0.0, S_next - carry)
-        P = float(self.p @ self.share_prev)                   # posted price index (last quarter's shares)
+        if mp.services and mp.weiss:
+            # posted price index of each sector (last quarter's within-sector shares): machines are goods; households
+            # buy both, so their price index is the Cobb-Douglas (expenditure-share) index of the two
+            g_ = self.sec == 0
+            P_g = float(self.p[g_] @ self.share_prev[g_]); P_s = float(self.p[~g_] @ self.share_prev[~g_])
+            P = P_g ** (1 - mp.s_sv) * P_s ** mp.s_sv
+        else:
+            P = P_g = float(self.p @ self.share_prev)         # posted price index (last quarter's shares)
         if not mp.prod_lag:
             y_plan = np.maximum(0.0, S - self.inv)
+        elif self.to_order.any():
+            # services: the capacity staffed this quarter is the newsvendor stock for this quarter's demand
+            y_plan = np.where(self.to_order, np.maximum(0.0, S - self.inv), y_plan)
         # capital is evaluated at the firm's discount rate for investment: its long-run cost of funds (discounted average
         # of its own) plus a hurdle premium. Firms' discount rates are high and move little with interest rates
         # (Gormsen and Huber 2023; Sharpe and Suarez 2021)
@@ -1334,7 +1363,7 @@ class Macro:
             heads = np.bincount(self.job[self.job >= 0], minlength=F).astype(float)
             wb_f = w_post * np.where(self.piece, Lw, self.zbar * heads)
         # financing: borrow what cash does not cover of wages and planned investment
-        new_loan = np.maximum(0.0, wb_f + P * I_plan - self.m)
+        new_loan = np.maximum(0.0, wb_f + P_g * I_plan - self.m)
         self.loan += new_loan
         self.m += new_loan - wb_f
 
@@ -1373,7 +1402,7 @@ class Macro:
 
         # 6. goods market at posted prices; households and investing firms buy from the same firms
         S_h = P * c
-        S_I = P * I_plan
+        S_I = P_g * I_plan
         S_tot = S_h.sum() + S_I.sum()
         sec, nsec = self.sec, 2
         if mp.services and mp.weiss:
@@ -1382,7 +1411,7 @@ class Macro:
             S_sec = np.array([S_tot, 0.0])
         Ssec_f = S_sec[sec]
         secsum = lambda x: np.bincount(sec, x, minlength=nsec)[sec]  # sum over the firm's sector
-        avail = self.inv.copy() if mp.prod_lag else self.inv + y
+        avail = (self.inv + np.where(self.to_order, y, 0.0)) if mp.prod_lag else self.inv + y
         # buyers choose among firms by random utility (logit): shares proportional to (p/P)^(-eps) x taste
         wts = (self.p / P) ** (-mp.eps) * np.exp(mp.taste_sd * self.rng.standard_normal(F))
         if mp.rho_c < 1:
@@ -1427,7 +1456,7 @@ class Macro:
         P_paid = spent / max(sold.sum(), 1e-12)
         I_real = S_I * fill_g / Pp_s[0]
         self.m += revenue - S_I * fill_g
-        S_I_f = P * I_plan
+        S_I_f = P_g * I_plan
         if getattr(self, "_ell", None) is not None:          # depreciation rises with utilization
             u_f = np.clip(self._kx * self._yprod / np.maximum(self.K, 1e-12), 0.0, mp.u_max)
             self._dep = (mp.delta - 0.8 * mp.delta1) + mp.delta1 * u_f
@@ -1441,7 +1470,7 @@ class Macro:
             ph = I_real / np.maximum(self.K, 1e-12)
             self.AK = np.exp((1 - ph) * np.log(self.AK) + ph * np.log(self.AKn))
             self.AL = np.exp((1 - ph) * np.log(self.AL) + ph * np.log(self.ALn))
-        self.inv = (avail - sold) * (1 - self.decay) + (y if mp.prod_lag else 0.0)
+        self.inv = (avail - sold) * (1 - self.decay) + (np.where(self.to_order, 0.0, y) if mp.prod_lag else 0.0)
         if getattr(self, "trace_on", False) and mp.vacancies:
             self.trace[-1].update(sold=float(sold[0]), dem=float(q_dem[0]), avail=float(avail[0]))
         self._qd, self._sold, self._avail = q_dem.copy(), sold.copy(), avail.copy()
@@ -1489,7 +1518,7 @@ class Macro:
         short = np.maximum(0.0, -self.m)
         self.loan += short; self.m += short
         # default: book net worth below zero -> the bank writes the loan down to restore zero net worth
-        nw = P * self.K + v * self.inv + self.m - self.loan
+        nw = P_g * self.K + v * self.inv + self.m - self.loan
         loss = np.where(nw < 0, -nw, 0.0)
         self.loan -= loss
         # owners are paid the quarter's accounting profit (book depreciation at historical cost); remaining cash

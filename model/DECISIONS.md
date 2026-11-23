@@ -85,3 +85,17 @@ Idea (user): pooled, posted, per-head pay belongs to low-wage service jobs (flat
 - **Sector price indexes:** each firm benchmarks its price against its own sector's published index (CPI goods and services are published separately); capital is valued at the overall index. Identical to before with one sector.
 - **Service sector (in progress):** households spend a share s_sv (0.25) of consumption on services, produced by the pooled-pay firms; investment buys goods only; customer markets and spillovers operate within sectors; services perish (inv_decay_sv = 0.9). With 14 goods firms and 6 service firms, service employment settles near 25% (the intended share). The economy is not yet stable: service firms produce to stock a quarter ahead (as goods firms do), stock out, learn from censored sales, and shrink. Next: services produced to order within the quarter (staffing as capacity, unused capacity lost), the way restaurants and shops work.
 
+### Labor flows and the policy rule (defaults changed, Nov 23)
+
+- **Separation rate 0.055 per quarter (was 0.03).** Measured flows into unemployment were 1.4% a quarter, because most separated workers find a job within the quarter. JOLTS layoffs run about 1.2% a month, and some quits lead to unemployment. Unemployment was 2.7%, below the US normal of about 4-4.5% (CBO natural rate about 4.4%). Now u is about 4.7%.
+- **Policy rule.** Smoothing 0.85 (was 0.95; Clarida, Gali and Gertler 2000 estimate about 0.8). Unemployment-gap weight 0.25 per quarter (was 0.1; Taylor 1993's 0.5 on the output gap is about 1 on the unemployment gap by Okun's law). With u* = 5% and the old low natural rate, the central bank saw permanent overheating: inflation fell to 0.4%. With the higher separation rate, inflation is 1.8%.
+- **20% asset bust (8 seeds, new defaults):** u +1.7 points at quarter 4 and +3.8 at quarter 8, back to baseline by quarter 24. Policy rate cut 2.5-2.7 points. Price level -5% at quarter 4 and -8% at quarter 16. Output -1 to -1.5%.
+
+### Two-sector bug fixes (services option)
+
+- Investment, firm net worth and loans were priced with the sum of within-sector share-weighted prices, about twice the price level with two sectors, so investment ran at a third of output. Machines are now priced with the goods index, and households use the Cobb-Douglas consumption index.
+- Services are produced to order within the quarter (capacity is the workforce; unused capacity is lost). The stock cap for service firms is the expected output of their workforce, not inventory.
+- A customer lost to a stock-out is valued at the normal margin (the long-run Lerner margin), not today's margin. Otherwise pricing below cost made lost customers look worthless, and service firms that could not produce priced below cost and stayed there.
+- Pooled firms benchmark pay against their workers' outside option (`pool_outside`): observed output per head x the going wage at output-paying firms. Benchmarking against the overall average put pooled pay at the median; benchmarking against other pooled firms made it ratchet up (to 1.5x the median), since each firm wanting to grow pays above its sector's average.
+- With services (14 goods firms, 6 service firms, services 25% of consumption, `pool_outside`), 2 seeds: u 4.4% (s.d. 0.6-0.8), inflation 1.5-1.7%, service employment 32%, pooled pay 0.82 x median, earnings p10/p50 0.80 and p90/p50 2.0 (data about 0.5 and 2), price over marginal cost 1.58, wage share 0.45.
+
