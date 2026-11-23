@@ -159,6 +159,7 @@ class MParams:
         # above; no reserve requirement. Open-market operations: the Fed buys or sells Treasury bills each quarter so
         # that reserves are res_target x annual GDP given the Treasury's account (TGA); the discount window covers any
         # shortfall. Fed profit (bills + discount loans - IOR) is remitted to the Treasury.
+        self.bank_bills = 0.05      # banks' liquidity holdings of Treasuries, share of their deposits
         self.res_target = 0.10      # reserves / annual nominal GDP (US 2024: about 11%)
         self.tga_target = 0.025     # Treasury's account at the Fed / annual GDP (about 2.5%)
         self.ior_spread = 0.0
@@ -168,7 +169,7 @@ class MParams:
         # yield at IOR + dealer_margin and the auction clears there. The retirement fund buys bills from the dealer for
         # the safe part of its portfolio (share fund_bills of its value)
         self.dealer_margin = 0.0
-        self.fund_bills = 0.15
+        self.fund_bills = 0.10
         self.g_share = 0.17
         self.g_sv = 0.5
         self.deficit_rule = True    # tax rule allows the deficit that keeps debt at its target share of growing GDP
@@ -2039,7 +2040,12 @@ class Macro:
         GDP_a_ = sum(self.GDP_hist[-4:])
         self.Bills = max(mp.tga_target * GDP_a_ - self.g, 0.0)
         self.TGA = self.g + self.Bills
-        self.SOMA = float(np.clip(mp.res_target * GDP_a_ + self.TGA, 0.0, self.Bills))
+        # private demand at the going yield: the fund's portfolio share and the banks' liquidity share of deposits;
+        # the Fed absorbs the rest of the supply, so yields stay put however much debt is issued (2020), and reserves
+        # are the result
+        Dtot_ = np.maximum(self.b, 0.0).sum() + np.maximum(self.m, 0.0).sum() + self.Fc + self.div_pending.sum()
+        bank_dem = mp.bank_bills * Dtot_
+        self.SOMA = float(np.clip(self.Bills - self.F_B - bank_dem, 0.0, self.Bills))
         if self.F_B > self.Bills - self.SOMA:                 # the Fed's purchases also come out of the fund's bills
             dfb = self.F_B - max(self.Bills - self.SOMA, 0.0)
             self.F_B -= dfb; self.Fc += dfb
