@@ -159,7 +159,7 @@ class MParams:
         # 2000); the rest cannot see skill and pay one wage per head. Workers know their skill; the better ones sort to
         # output-based pay, so a pooled firm's average quality rises with its wage and it will not cut pay below the
         # level where quality falls faster than the wage; it lays off (at random) instead
-        self.weiss = False
+        self.weiss = True 
         self.n_piece = 5            # firms paying by measured output
         self.piece_own_market = True   # output-paying firms compare their pay with other output-paying firms
         self.commission = 0.0       # > 0: output-paying firms pay this share of the value of output per unit of effective labor
