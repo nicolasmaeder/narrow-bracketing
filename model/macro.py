@@ -70,6 +70,7 @@ class MParams:
         self.pi_star = 0.005        # inflation target per quarter (2% a year)
         self.u_star = 0.05
         self.phi_pi, self.phi_u = 1.5, 0.1
+        self.zlb = True             # lower bound on the policy rate (off only in diagnostics)
         self.rho_i = 0.95           # interest-rate smoothing
         # wages (placeholder rule): indexation to observed inflation + response to unemployment, downward rigid
         self.phi_W = 0.05
@@ -83,7 +84,7 @@ class MParams:
         self.fund = True
         self.erp = 0.0075           # fund's published equity premium per quarter (3% a year)
         self.g_lr = 0.02            # fund's forgetting rate on observed deposit rates (long-run rate belief)
-        self.g_earn = 0.25          # forgetting rate on firms' earnings (trailing year)
+        self.g_earn = 0.025         # forgetting rate on firms' earnings: about ten years, as in normalized-earnings valuation (Graham-Dodd; Shiller CAPE)
         self.fund_cash_q = 0.5      # cash kept for withdrawals, in quarters of withdrawals
         # wage posting (replaces the wage rule)
         self.wage_posting = True    # False = placeholder wage rule (v3 results)
@@ -170,6 +171,8 @@ class MParams:
         # most firms report constant or falling marginal cost); capacity is chosen for normal orders under uncertainty
         self.embodied = True       # techniques embodied in capital (Solow 1960 vintages; Jones and Liu 2024): a chosen
                                    # technique applies only to capital installed after it is chosen
+        self.clv_lr = False        # customers valued at the margin over long-run unit cost (capacity they need)
+        self.cap_unc = False       # capacity planned for orders at the price without a capacity limit (see invest)
         self.utilization = False   # on: see README (destabilizes for now)
         self.u_bar = 0.8            # normal (design) utilization
         self.k_speed = 0.25         # share of the gap to desired capacity closed per quarter (time to build)
@@ -545,6 +548,10 @@ class Macro:
                 lam = self.lam_sh[:, None] if mp.share_learn else 1.0
                 Lp = sh * (p / Pref) ** (-lam * mp.eps * (1 - sh))
                 mc = v[:, None] * (1 + rL[:, None] if np.ndim(rL) else 1 + rL) / (1 - mp.inv_decay)
+                if mp.clv_lr:
+                    # a customer is a lasting flow of orders that needs capacity built for it: its margin is over the
+                    # long-run unit cost (labor and the user cost of capital), not this quarter's marginal cost
+                    mc = np.maximum(mc, uc[:, None])
                 clv = self._Stot * np.maximum(1 - mc / p, 0.0) / ((rL[:, None] if np.ndim(rL) else rL) + mp.rho_c)
                 served = np.minimum(1.0, Emin / np.maximum(mu, 1e-12))      # share of demand it expects to serve
                 # customers are worth their margin only up to what the firm can serve: buyers beyond its stock on
@@ -964,7 +971,7 @@ class Macro:
         # 1. policy rate
         pi4 = np.mean(self.pi_hist[-4:])                      # observed inflation, last four quarters
         rule = mp.i_star + mp.phi_pi * (pi4 - mp.pi_star) - mp.phi_u * (self.u_prev - mp.u_star)
-        i = max(0.0, (self.i_prev if mp.fix_policy else mp.rho_i * self.i_prev + (1 - mp.rho_i) * rule) + i_shock)
+        i = max(0.0 if mp.zlb else -1.0, (self.i_prev if mp.fix_policy else mp.rho_i * self.i_prev + (1 - mp.rho_i) * rule) + i_shock)
         self.i_prev = i - i_shock
         # 2. bank and government post
         if mp.bank_objective:
@@ -1166,6 +1173,16 @@ class Macro:
         # capacity is planned for normal sales: a discounted average of the firm's own sales, grown at published trend
         # growth over the coming year (a one-quarter surge in orders does not justify new capacity: no accelerator loop)
         s_cap = self.s_lr * np.exp(4 * self.gY) if mp.invest_lr else mu_s
+        if mp.invest_lr and getattr(self, "_ell", None) is not None and mp.cap_unc:
+            # sales are capped by capacity, so a firm at capacity does not see the orders it would get with more of
+            # it: capacity is planned for the orders it expects at the price it would charge with marginal cost flat
+            # (no capacity limit), relative to the orders it expects at its plan price with current capacity
+            ycap0 = self._ycap
+            self._ycap = np.full_like(ycap0, 1e300)
+            _, _, mu_u, _ = self.price_and_stock(W_firm, r_own, plan=True)
+            self._ycap = ycap0
+            _, _, mu_c, _ = self.price_and_stock(W_firm, r_own, plan=True)
+            s_cap = s_cap * np.clip(mu_u / np.maximum(mu_c, 1e-12), 1.0, 1.5)
         W_K = om_e if (mp.prod_lag and mp.v_marginal and mp.k_full) else W_firm
         if mp.invest_lr:
             # capital lasts many years, so the firm weighs it against the wage relative to prices it expects over that
