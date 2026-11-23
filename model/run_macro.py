@@ -1,7 +1,7 @@
 import numpy as np, time, json, sys
 from household import Params
 from macro import Macro, MParams
-HP = dict(version="calculator", psi_A=0.9, fixed_cost=0.15, entry_cost=0.05, eps_B=0.5, G25=2.0, band=0.05, sigma_B=1.0, psi_B=1.0, R_plan=1.01, need=0.33)
+HP = dict(version="calculator", psi_A=0.9, fixed_cost=0.15, entry_cost=0.05, eps_B=0.5, G25=2.0, band=0.05, sigma_B=1.0, psi_B=1.0, R_plan=1.01, need=0.33, cred_lim=1.5)
 def build(need=None, hpk=None, **mk):
     hp = dict(HP) if need is None else {**HP, 'need': need}
     hp.update(hpk or {})
