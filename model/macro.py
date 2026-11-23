@@ -163,6 +163,8 @@ class MParams:
         # Depreciation per quarter = delta0 + delta1 u, u in [0, u_max]. Below capacity, extra output needs labor
         # plus more intensive use of the existing machines, so short-run marginal cost is flat (Blinder et al. 1998:
         # most firms report constant or falling marginal cost); capacity is chosen for normal orders under uncertainty
+        self.embodied = True       # techniques embodied in capital (Solow 1960 vintages; Jones and Liu 2024): a chosen
+                                   # technique applies only to capital installed after it is chosen
         self.utilization = False   # on: see README (destabilizes for now)
         self.u_bar = 0.8            # normal (design) utilization
         self.k_speed = 0.25         # share of the gap to desired capacity closed per quarter (time to build)
@@ -218,6 +220,8 @@ class Macro:
         # (with variable utilization the starting point is at normal utilization 0.8)
         self.AK = np.full(F, y0 / K0 / (0.8 if mp.utilization else 1.0)) if mp.tech else None
         self.AL = np.full(F, y0 / L0) if mp.tech else None
+        self.AKn = None if self.AK is None else self.AK.copy()   # technique of the machines the firm now buys
+        self.ALn = None if self.AL is None else self.AL.copy()
         self.lnlam0 = np.log(mp.R0) + mp.pK * np.log(mp.theta_I * y0 / K0) + mp.pL * np.log(mp.theta_I * y0 / L0)
         self.poolK = np.array([self.AK[0] if mp.tech else y0 / K0]); self.poolL = np.array([y0 / L0])   # stock of known ideas (useful part)
         self.n_ideas = 0
@@ -465,9 +469,16 @@ class Macro:
         c = self.unit_cost(wv, uv, self.poolK[None, :], self.poolL[None, :])
         k = c.argmin(1); idx = np.arange(F)
         c_new = c[idx, k]
-        c_old = self.unit_cost(w, uK)
-        go = (c_old - c_new) / (r_own + self.turn) > mp.adopt_cost * p
-        self.AK = np.where(go, self.poolK[k], self.AK); self.AL = np.where(go, self.poolL[k], self.AL)
+        if mp.embodied:
+            # embodied: the choice is the design of the machines the firm buys from now on; installed machines keep
+            # theirs (the installed technique moves toward it as new capital is installed, see the capital update)
+            c_old = self.unit_cost(w, uK, self.AKn, self.ALn)
+            go = (c_old - c_new) / (r_own + self.turn) > mp.adopt_cost * p
+            self.AKn = np.where(go, self.poolK[k], self.AKn); self.ALn = np.where(go, self.poolL[k], self.ALn)
+        else:
+            c_old = self.unit_cost(w, uK)
+            go = (c_old - c_new) / (r_own + self.turn) > mp.adopt_cost * p
+            self.AK = np.where(go, self.poolK[k], self.AK); self.AL = np.where(go, self.poolL[k], self.AL)
         self.turn = (1 - mp.g_T) * self.turn + mp.g_T * go
         self.adopt_last = float(go.mean())
         # the adoption cost is the time of the firm's own workers (installation, retraining) this quarter
@@ -976,6 +987,7 @@ class Macro:
         if mp.tech and mp.exo_g > 0:                          # diagnostic: smooth exogenous labor-augmenting growth
             ge = mp.exo_g * min(1.0, self.t / mp.exo_ramp) if mp.exo_ramp else mp.exo_g
             self.AL = self.AL * np.exp(ge); self.poolL = self.poolL * np.exp(ge)
+            if self.ALn is not None: self.ALn = self.ALn * np.exp(ge)
         elif mp.tech:                                         # technique choice at last quarter's own wage and price
             # a technique is long-lived: it is evaluated at the same discount rate as capital (long-run cost of funds
             # plus the hurdle premium when invest_lr)
@@ -1298,7 +1310,13 @@ class Macro:
             self._util = u_f
         else:
             self._dep = np.full(F, mp.delta)
-        self.K = (1 - self._dep) * self.K + I_real
+        K_old = (1 - self._dep) * self.K
+        self.K = K_old + I_real
+        if mp.embodied and mp.tech:
+            # vintages: the installed technique is the capital-weighted (geometric) mix of old machines and new ones
+            ph = I_real / np.maximum(self.K, 1e-12)
+            self.AK = np.exp((1 - ph) * np.log(self.AK) + ph * np.log(self.AKn))
+            self.AL = np.exp((1 - ph) * np.log(self.AL) + ph * np.log(self.ALn))
         self.inv = (avail - sold) * (1 - mp.inv_decay) + (y if mp.prod_lag else 0.0)
         if getattr(self, "trace_on", False) and mp.vacancies:
             self.trace[-1].update(sold=float(sold[0]), dem=float(q_dem[0]), avail=float(avail[0]))
