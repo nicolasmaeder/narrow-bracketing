@@ -41,6 +41,8 @@ class Params:
         self.kappa0 = 0.06      # default contribution rate at entry
         self.fixed_cost = 0.02  # re-optimization cost, share of quarterly consumption (sticky version)
         self.z_sd = 0.5         # permanent productivity dispersion (log)
+        self.z_dist = "lognormal"   # or "rectnormal": max(z_min, 1 + z_sd N(0,1)), a mass of very low-productivity workers (Weiss)
+        self.z_min = 0.05
         self.entry_cost = 0.0   # fixed cost of drawing the buffer below its starting balance (share of u'(c)c)
         self.tau_m = 0.0        # mandatory pension contribution rate (floor on contributions)
         self.version = "sticky"        # 'fungible' | 'sticky' | 'calculator'
@@ -133,7 +135,10 @@ class Economy:
         self.rng = rng
         N, J = p.N, p.J
         self.age = np.repeat(np.arange(J), p.n_per_cohort)          # j = 0..J-1
-        self.z = np.exp(p.z_sd * rng.standard_normal(N) - p.z_sd ** 2 / 2)
+        if p.z_dist == "rectnormal":
+            self.z = np.maximum(p.z_min, 1.0 + p.z_sd * rng.standard_normal(N))
+        else:
+            self.z = np.exp(p.z_sd * rng.standard_normal(N) - p.z_sd ** 2 / 2)
         self.emp = np.ones(N, bool)
         self.b = np.zeros(N)
         self.a = np.zeros(N)

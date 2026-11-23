@@ -149,6 +149,12 @@ class MParams:
         self.bequest = False        # estates go to heirs (the entrant replacing the deceased), not to the government
         self.r_assumed = 0.0        # > 0: fund values firms at this published assumed return instead of the long-run deposit rate + premium
         self.market_belief = True   # firms' demand belief = own market position x published market size
+        # Weiss (1980) adverse selection: some firms measure each worker's output and pay by it (piece rates, Lazear
+        # 2000); the rest cannot see skill and pay one wage per head. Workers know their skill; the better ones sort to
+        # output-based pay, so a pooled firm's average quality rises with its wage and it will not cut pay below the
+        # level where quality falls faster than the wage; it lays off (at random) instead
+        self.weiss = False
+        self.n_piece = 5            # firms paying by measured output
         self.exo_ramp = 0           # diagnostic: quarters over which exogenous growth ramps up
         self.exo_g = 0.0            # diagnostic: exogenous labor-augmenting growth per quarter instead of ideas
         self.burn_hh = 600          # household-only burn-in for the initial distribution
@@ -197,6 +203,10 @@ class Macro:
         self.poolK = np.array([y0 / K0]); self.poolL = np.array([y0 / L0])   # stock of known ideas (useful part)
         self.n_ideas = 0
         self.s_lr = np.full(F, y0)               # firm's normal sales (discounted average of its own)
+        self.piece = (np.arange(F) < mp.n_piece) if mp.weiss else np.zeros(F, bool)
+        self.zbar = float(self.z[self.age < self.hp.J_W].mean())      # published average skill of the labor force
+        self.qbar = np.full(F, self.zbar)                              # each firm's average worker quality (observed)
+        zw = np.sort(self.z[self.age < self.hp.J_W]); self._zpub = zw[:: max(1, len(zw) // 400)]   # published skill distribution
         self.r_lr_f = np.full(F, mp.i_star + 0.005)   # firm's long-run cost of funds (discounted average of its own)
         self.turn = np.full(F, 0.05)             # belief: rate at which the firm's technique is superseded (own record)
         self.gY = mp.g_N / mp.pL if mp.tech else 0.0   # published real growth of final sales (discounted average)
@@ -584,13 +594,18 @@ class Macro:
         R = mp.kappa_h * T * H * (H / Lb) ** mp.psi_h
         return H, R, L_flow
 
-    def pay_review(self, We, a, Q, r):
+    def pay_review(self, We, a, Q, r, We_piece=None):
         """Annual pay review (Salop turnover model): the relative pay that minimizes cost per worker,
             min over x:  x We [1 + (r + sep + Q x^-eta) c_v / min(1, a x^eta)],
         with We the market pay expected over the coming year (last observed x last year's market growth). The
         answer does not depend on the firm's sales: those set how many it hires, not what it pays."""
         xg = np.linspace(0.7, 1.4, 281)[None, :]
-        c = self.full_cost(xg, We, a[:, None], Q[:, None], r[:, None])
+        c = self.full_cost(xg, np.asarray(We)[:, None] if np.ndim(We) else We, a[:, None], Q[:, None], r[:, None])
+        if self.mp.weiss and We_piece is not None:
+            # pooled firms: cost per unit of effective labor = cost per head / average quality attracted (Weiss)
+            We_pool = float(np.mean(np.asarray(We)[~self.piece])) if np.ndim(We) else We
+            qb = self.quality_belief(xg[0], We_pool, We_piece)[None, :]
+            c = np.where(self.piece[:, None], c, c * self.zbar / qb)
         return xg[0, c.argmin(1)] * We
 
     def wage_choice_v(self, We, p, mu, v, a, Q, floor_x, r):
@@ -663,10 +678,33 @@ class Macro:
         return self.P_prev * (1 + self.anchored(self.pi_e)) if self.mp.wage_posting else self.P_prev
 
     # ------------------------------------------------------------------ labor market with posted wages
-    def Wbar_obs(self):
-        """Going wage: employment-weighted average of posted wages (published statistic)."""
+    def earn_fac(self, job, z=None):
+        """What a worker earns per unit of posted pay: own skill at output-paying firms, the average skill (one
+        wage per head) at pooled firms."""
+        z = self.z if z is None else z
+        jf = np.maximum(job, 0)
+        return np.where(self.piece[jf], z, self.zbar)
+
+    def quality_belief(self, x, We_pool, We_piece):
+        """A pooled firm's belief of the average skill it attracts at relative pay x, from the published skill
+        distribution and published pay: a worker of skill z compares x We_pool zbar (pooled, per head) with
+        We_piece z (paid by output) through the same random-utility choice workers use."""
+        mp = self.mp
+        zs = self._zpub
+        sp = max(mp.n_piece, 1) / mp.F
+        lw_pool = mp.eta_L * np.log(np.maximum(x * We_pool * self.zbar, 1e-12))[..., None]
+        lw_piece = mp.eta_L * np.log(np.maximum(We_piece * zs, 1e-12))
+        pi = 1.0 / (1.0 + sp / (1 - sp) * np.exp(np.clip(lw_piece - lw_pool, -50, 50)))
+        return (pi * zs).sum(-1) / np.maximum(pi.sum(-1), 1e-12)
+
+    def Wbar_obs(self, sel=None):
+        """Going wage: employment-weighted average of posted wages (published statistic), optionally for a subset
+        of firms."""
         on = self.job >= 0
         L = np.bincount(self.job[on], self.z[on], self.mp.F)
+        if sel is not None:
+            L = L * sel
+            return float(self.w @ L / L.sum()) if L.sum() > 0 else float(self.w[sel].mean())
         return float(self.w @ L / L.sum()) if L.sum() > 0 else float(self.w.mean())
 
     def labor_market(self, w, We, L_star, work, L_target=None, q_fill=None, hires=None):
@@ -707,16 +745,30 @@ class Macro:
             V = np.maximum(0.0, L_target - L_now); vac = V.copy()   # one open position per hire wanted (requisitions)
         U_seek = z[work & (job < 0)].sum()
         quits = np.zeros(F); apps = np.zeros(F); hired = np.zeros(F)
+        We_ref = float(np.mean(We)) if np.ndim(We) else We
 
         def round_(seek, u_c, key, V_left, count_apps):
             wt = (V_left > 1e-9) * (vac if L_target is not None else 1.0) * (w / We) ** mp.eta_L   # seekers meet hiring firms (in proportion to vacancies if posted)
             if wt.sum() <= 0 or seek.sum() == 0:
                 return V_left
-            cdf = np.cumsum(wt) / wt.sum()
             idx = np.nonzero(seek)[0]
-            ch = np.minimum(np.searchsorted(cdf, u_c[idx]), F - 1)
             cur = job[idx]
-            ok = (cur < 0) | (w[ch] * np.exp(zeta[idx]) > w[np.maximum(cur, 0)])   # on-the-job searchers move if the offer beats their job
+            if mp.weiss:
+                # each worker compares what it would earn: own skill x pay at output-paying firms, pay per head at
+                # pooled firms
+                fac = np.where(self.piece[None, :], z[idx, None], self.zbar)
+                wti = (V_left > 1e-9)[None, :] * (vac if L_target is not None else 1.0)[None, :] * (w[None, :] * fac / We_ref) ** mp.eta_L
+                cdfi = np.cumsum(wti, 1); tot = cdfi[:, -1]
+                good = tot > 0
+                ch = np.where(good, (cdfi < (u_c[idx] * tot)[:, None]).sum(1), 0)
+                ch = np.minimum(ch, F - 1)
+                e_new = w[ch] * fac[np.arange(len(idx)), ch]
+                e_cur = w[np.maximum(cur, 0)] * fac[np.arange(len(idx)), np.maximum(cur, 0)]
+                ok = good & ((cur < 0) | (e_new * np.exp(zeta[idx]) > e_cur))
+            else:
+                cdf = np.cumsum(wt) / wt.sum()
+                ch = np.minimum(np.searchsorted(cdf, u_c[idx]), F - 1)
+                ok = (cur < 0) | (w[ch] * np.exp(zeta[idx]) > w[np.maximum(cur, 0)])   # on-the-job searchers move if the offer beats their job
             idx, ch, cur = idx[ok], ch[ok], cur[ok]
             if len(idx) == 0:
                 return V_left
@@ -844,35 +896,41 @@ class Macro:
                 qf = np.exp(self.lnq)
                 if mp.public_labor:                           # beliefs: discounted average of published statistics
                     qf = np.full(F, self.q_bel); Q = np.full(F, self.Q_bel)
-                w_post = np.maximum(self.w, self.pay_review(We * (1 + g_mkt) ** 1.5, qf, Q, r_own))   # no nominal cuts
+                We_piece = None
+                if mp.weiss:                                  # pooled firms also look at published pay at output-paying firms
+                    We_piece = self.Wbar_obs(self.piece) * (1 + g_mkt) ** 2.5
+                w_post = np.maximum(self.w, self.pay_review(We * (1 + g_mkt) ** 1.5, qf, Q, r_own, We_piece))   # no nominal cuts
             else:
                 p0, S0, mu0, v0 = self.price_and_stock(w0, r_own)
                 w_post, L_cap = self.wage_choice(We, p0, mu0, v0, L_prev, B, Q, self.w / We)
             if mp.review_q > 1:                                 # wages are reviewed once every review_q quarters (staggered)
                 rev = (np.arange(F) + self.t) % mp.review_q == 0
                 w_post = np.where(rev, w_post, self.w)
+            # cost per unit of effective labor: pooled firms pay per head, so divide by the average quality they have
+            qfac = np.where(self.piece, 1.0, self.zbar / np.maximum(self.qbar, 1e-6)) if mp.weiss else np.ones(F)
+            w_eff = w_post * qfac
             if mp.vacancies:
                 # price and stock at the wage; keep incumbents while their product covers the wage,
                 # hire toward the labor at which it covers the full cost (wage + recruiting)
-                omega = self.full_cost(w_post / We, We, qf, Q, r_own)
-                self.p, S, mu_s, v = self.price_and_stock(w_post, r_own)   # price on the marginal cost of its workers
+                omega = self.full_cost(w_post / We, We, qf, Q, r_own) * qfac
+                self.p, S, mu_s, v = self.price_and_stock(w_eff, r_own)   # price on the marginal cost of its workers
                 L_keep = self.labor_for_cost(w_post[:, None], self.p, mu_s, v)[0][:, 0]
                 L_tgt = self.labor_for_cost(omega[:, None], self.p, mu_s, v)[0][:, 0]
                 if mp.hiring == "convex":
                     x_ = w_post / We
                     stay = L_prev * np.clip(1 - hp.sep - Q * x_ ** (-mp.eta_L), 0, 1)
-                    H_want, R_rec, L_flow = self.hires_choice(self.p, mu_s, w_post, stay, r_own, Q, np.minimum(1.0, qf * x_ ** mp.eta_L))
+                    H_want, R_rec, L_flow = self.hires_choice(self.p, mu_s, w_eff, stay, r_own, Q, np.minimum(1.0, qf * x_ ** mp.eta_L))
                     # keep a worker while marginal revenue product covers the wage
                     lo_, hi_ = np.zeros(F), 10 * np.maximum(L_prev, 1.0)
                     for _ in range(50):
-                        mid_ = 0.5 * (lo_ + hi_); pos_ = self._mrp(mid_) > w_post
+                        mid_ = 0.5 * (lo_ + hi_); pos_ = self._mrp(mid_) > w_eff
                         lo_ = np.where(pos_, mid_, lo_); hi_ = np.where(pos_, hi_, mid_)
                     L_keep = 0.5 * (lo_ + hi_)
                     L_tgt = stay + H_want
             else:
                 self.p, S, mu_s, v = self.price_and_stock(w_post, r_own)
                 S = np.minimum(S, self.inv + self.prod(L_cap))
-            W_firm = w_post
+            W_firm = w_eff
         else:
             W_firm = W
             self.p, S, mu_s, v = self.price_and_stock(W, r_own)
@@ -917,7 +975,7 @@ class Macro:
                 Tq = mp.q_ref / np.maximum(np.minimum(1.0, qf * x_ ** mp.eta_L), 1e-3)
                 mch = (1 + mp.psi_h) * mp.kappa_h * Tq * (H_want / np.maximum(stay, 1.0)) ** mp.psi_h
                 tenure_r = r_own + hp.sep + Q * x_ ** (-mp.eta_L)
-                om_e = w_post * (1 + np.where(H_want > 1e-9, mch * tenure_r, 0.0))
+                om_e = w_eff * (1 + np.where(H_want > 1e-9, mch * tenure_r, 0.0))
             else:
                 om_e = W_firm
             # a price kept for several quarters is set for the flow: jointly with the stock, at the marginal cost of
@@ -964,6 +1022,9 @@ class Macro:
             if mp.vacancies:
                 Ld, emp, quits, apps, V, L_prev = self.labor_market(w_post, We, L_keep, work, L_target=L_tgt, q_fill=qf,
                                                                     hires=H_want if mp.hiring == "convex" else None)
+                if mp.weiss:                                      # each firm observes its workers' average output
+                    heads = np.bincount(self.job[self.job >= 0], minlength=F).astype(float)
+                    self.qbar = np.where(heads > 0, Ld / np.maximum(heads, 1e-9), self.qbar)
                 if mp.hiring == "convex":                         # belief: share of wanted hires that arrive
                     hw = H_want > 1e-6
                     obs_h = np.clip(self.hired_last / np.maximum(H_want, 1e-9), 0.0, 1.0)
@@ -1025,13 +1086,17 @@ class Macro:
             obs_phi = np.clip(np.log(np.maximum(Ld, 1e-9) / np.maximum(Ld_req, 1e-9)), -3.0, 0.0)
             self.lnphi = (1 - mp.g_L) * self.lnphi + mp.g_L * obs_phi
         wb_f = W_firm * (Lw if mp.wage_posting else Ld)
+        if mp.weiss:                                          # exact pay: by output at piece firms, per head at pooled firms
+            heads = np.bincount(self.job[self.job >= 0], minlength=F).astype(float)
+            wb_f = w_post * np.where(self.piece, Lw, self.zbar * heads)
         # financing: borrow what cash does not cover of wages and planned investment
         new_loan = np.maximum(0.0, wb_f + P * I_plan - self.m)
         self.loan += new_loan
         self.m += new_loan - wb_f
 
         # 5. households
-        wage_h = np.where(emp, (1 - tau) * (self.w[np.maximum(self.job, 0)] if mp.wage_posting else W) * self.z, 0.0)
+        wage_h = np.where(emp, (1 - tau) * (self.w[np.maximum(self.job, 0)] if mp.wage_posting else W)
+                          * (self.earn_fac(self.job) if mp.weiss else self.z), 0.0)
         benefit = np.where(work & ~emp, hp.ui * W * self.z, 0.0)
         pension = np.where(~work, self.pens * W, 0.0)
         tax_rev = tau * wb_f.sum()
