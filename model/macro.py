@@ -106,7 +106,7 @@ class MParams:
         self.share_learn = False    # firms learn how much share their relative price actually wins (rivals co-move;
                                     # Blinder et al. 1998 coordination failure): regression of own share changes on
                                     # the logit prediction from own price relative to the expected index
-        self.g_sh = 0.05            # gain of that regression (discounted least squares)
+        self.g_sh = 0.02            # gain of that regression (discounted least squares)
         self.w_sh = 1.0             # prior weight on the logit slope, in quarters of typical data
         self.rho_c = 0.5            # customer market: share of buyers who re-shop each quarter (1 = all re-shop, no customer base)
         self.menu_cost = 0.03       # state-dependent pricing: change price when the expected gain exceeds this share of revenue; calibrated to the frequency of price changes (about 40% a quarter), as in Golosov-Lucas and Nakamura-Steinsson (direct measures, Zbaracki et al. 2004: about 1.2%); 0: fixed review_p
@@ -355,8 +355,8 @@ class Macro:
         self._Ssec = np.zeros(F)                       # spending on the firm's sector last quarter
         self._Stot = 0.0
         self.lam_sh = np.ones(F)
-        self.sh_m = np.zeros((4, F))
         self.sh_v0 = 0.01                     # typical quarterly variance of the logit prediction (set from the baseline)
+        self.sh_m = np.zeros((4, F)); self.sh_m[2] = self.sh_v0; self.sh_m[3] = self.sh_v0   # moments start at the prior (slope 1)
         # ---------------- labor market state: who works where, posted wages, firms' beliefs
         self.job = np.full(N, -1)
         ew = np.nonzero(self.emp & work)[0]
