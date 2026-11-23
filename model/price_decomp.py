@@ -9,11 +9,13 @@ def stats(m):
     y=m.prod(L)
     uc=m.unit_cost(m.w, m.P_ref()*(m.r_lr_f+m.mp.delta))
     mc=m.mc_y(m.w, np.maximum(y,1e-9))
-    return dict(p=np.mean(np.log(m.p)), w=np.mean(np.log(m.w)), uc=np.mean(np.log(uc)), mc=np.mean(np.log(mc)), lnA=np.mean(m.lnA), y=np.log(y.sum()), K=np.log(m.K.sum()), L=np.log(L.sum()), pie=float(np.mean(m.anchored(m.pi_e))), inv=np.log(m.inv.sum()))
+    g_=m.sec==0
+    return dict(stk=np.mean(np.log(np.maximum(m.inv[g_],1e-9)/np.exp(m.lnA[g_]))), pg=np.mean(np.log(m.p[g_])), ps=np.mean(np.log(m.p[~g_])) if (~g_).any() else 0.0, p=np.mean(np.log(m.p)), w=np.mean(np.log(m.w)), uc=np.mean(np.log(uc)), mc=np.mean(np.log(mc)), lnA=np.mean(m.lnA), y=np.log(y.sum()), K=np.log(m.K.sum()), L=np.log(L.sum()), pie=float(np.mean(m.anchored(m.pi_e))), inv=np.log(m.inv.sum()))
 def run(seed):
     m=build(seed=seed,**KW)
     for t in range(400): m.step()
     m._mrp=None; a,b=copy.deepcopy(m),copy.deepcopy(m); b.vshock=0.8
+    if __import__('os').environ.get('SHOCK')=='2008': b.cred_target=0.5
     out=[]
     for _ in range(H):
         ra=a.step(); rb=b.step(); sa,sb=stats(a),stats(b)
