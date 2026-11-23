@@ -10,11 +10,14 @@ def run(seed):
     m=build(seed=seed, **KW)
     for t in range(400): m.step()
     m._mrp=None; a,b=copy.deepcopy(m),copy.deepcopy(m)
-    if SHOCK=='credit': b.cred_target=SIZE         # banks cut credit lines by SIZE, phased in (decays at cred_shock_rho)
+    if SHOCK=='rate': pass
+    elif SHOCK=='credit': b.cred_target=SIZE         # banks cut credit lines by SIZE, phased in (decays at cred_shock_rho)
     else: b.vshock=1-SIZE                           # asset values fall by SIZE
     A=[];B=[];tA=[];tB=[]
     for _ in range(H):
-        A.append(a.step()); B.append(b.step())
+        k_=len(A)
+        ish=(SIZE/400.0)*0.8**k_ if SHOCK=='rate' else 0.0   # policy-rate shock: SIZE points (annual), decaying 0.8 a quarter
+        A.append(a.step()); B.append(b.step(i_shock=ish) if SHOCK=='rate' else b.step())
         tA.append(np.mean(np.log(a.AL))); tB.append(np.mean(np.log(b.AL)))
     g=lambda R,k: np.array([r[k] for r in R],float)
     return dict(u=100*(g(B,'u')-g(A,'u')), nocutB=g(B,'nocut_bind'), nocutA=g(A,'nocut_bind'),

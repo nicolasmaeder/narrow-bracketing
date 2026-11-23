@@ -211,6 +211,19 @@ class MParams:
         # default probability that rises as the firm's interest coverage (operating cash flow / interest, observed
         # through the lending relationship) weakens: PD = pd0 (cov_ref / cov)^pd_el, rate = (1 + rL)/(1 - PD LGD) - 1
         self.efp = True
+        # consumer durables: a stock that depreciates dur_delta a quarter; the household upgrades to its target
+        # (dur_theta quarters of reference income at goods prices) when the service value of closing the gap, psi x
+        # gap share x income, covers the user cost (borrowing rate + depreciation) of the gap plus a fixed cost
+        # dur_F x income: (S,s) under fixed adjustment costs (Grossman and Laroque 1990). Higher rates widen the band
+        self.durables = False
+        self.dur_theta = 2.0
+        self.dur_delta = 0.05
+        self.dur_psi = 0.255
+        self.dur_F = 0.02
+        self.inst_n = 20            # installment (auto) loans: quarters to repay
+        self.inst_spread = 0.005    # over the bank loan rate, per quarter
+        self.inst_down = 0.1        # down payment share
+        self.inst_dti = 0.15        # payments on installment debt at most this share of income (lenders' DTI rule)
         self.pd0 = 0.004            # quarterly default probability at the reference coverage (about 1.6% a year)
         self.cov_ref = 4.0          # reference interest coverage (investment-grade firms run about 4-6)
         self.pd_el = 2.0            # halving coverage quadruples the default probability
@@ -1068,7 +1081,7 @@ class Macro:
         deposits = self.b.sum() + self.m.sum() + self.div_pending.sum() + self.g + self.Fc
         if not self.mp.fund:
             deposits += self.a.sum()
-        return deposits + self.E_B - self.loan.sum()
+        return deposits + self.E_B - self.loan.sum() - (self.L_inst.sum() if getattr(self, 'L_inst', None) is not None else 0.0)
 
     # ------------------------------------------------------------------ one quarter
     def step(self, extra_y=None, tax_shift=0.0, i_shock=0.0, record=True, R_plan=None):
@@ -1453,7 +1466,45 @@ class Macro:
         extra = np.zeros(N) if extra_y is None else extra_y
         y_h = wage_h + benefit + pension + self.div_pending + extra
         self.div_pending = np.zeros(N)
-        m_cash = self.b + y_h
+        S_D = np.zeros(N); gap_buy = np.zeros(N); cash_D = np.zeros(N); self._int_inst = 0.0
+        if mp.durables:
+            r_a = float(np.mean(rL)) + mp.inst_spread
+            den = max(mp.dur_psi - (r_a + mp.dur_delta) * mp.dur_theta, 1e-6)
+            thr = mp.dur_F / den                               # (S,s) band: upgrade when the gap share exceeds thr
+            if getattr(self, "dur", None) is None:
+                self.dur = mp.dur_theta * self.yhat / P_g * (1 - min(thr, 0.9) * self.rng.random(N))   # spread over the band
+                self.L_inst = np.zeros(N); self.pay_inst = np.zeros(N); self.r_inst = np.zeros(N)
+                self.n_inst = np.zeros(N, int)
+            # scheduled payments on installment loans (fixed nominal annuity at the origination rate)
+            on_ = self.n_inst > 0
+            int_i = self.r_inst * self.L_inst
+            pay = np.where(on_, np.where(self.n_inst == 1, self.L_inst + int_i, self.pay_inst), 0.0)   # last payment clears it
+            self.L_inst = np.where(on_, np.maximum(self.L_inst + int_i - pay, 0.0), 0.0)
+            self.n_inst = np.maximum(self.n_inst - 1, 0)
+            self.L_inst = np.where(self.n_inst > 0, self.L_inst, 0.0)
+            self._int_inst = float(int_i[on_].sum())
+            cash_D += pay
+            # purchases
+            self.dur = self.dur * (1 - mp.dur_delta)
+            dstar = mp.dur_theta * self.yhat / P_g
+            gap = np.maximum(dstar - self.dur, 0.0)
+            ann = r_a / (1 - (1 + r_a) ** (-mp.inst_n))
+            new_pay = (1 - mp.inst_down) * P_g * gap * ann
+            dti_ok = (np.where(self.n_inst > 0, self.pay_inst, 0.0) + new_pay) <= mp.inst_dti * self.yhat
+            down_ok = self.b + y_h - pay >= mp.inst_down * P_g * gap
+            buy = (gap / np.maximum(dstar, 1e-12) >= thr) & dti_ok & down_ok & (gap > 0)
+            gap_buy = np.where(buy, gap, 0.0)
+            S_D = P_g * gap_buy
+            loan_new = (1 - mp.inst_down) * S_D                # the bank's loan creates the deposit that pays the seller
+            # the new loan is consolidated with any old balance into one new annuity
+            Lnew = self.L_inst + loan_new
+            self.L_inst = np.where(buy, Lnew, self.L_inst)
+            self.r_inst = np.where(buy, r_a, self.r_inst)
+            self.n_inst = np.where(buy, mp.inst_n, self.n_inst)
+            self.pay_inst = np.where(buy, Lnew * ann, self.pay_inst)
+            cash_D += mp.inst_down * S_D                       # down payment
+            self._loan_new_D = loan_new
+        m_cash = self.b + y_h - cash_D
         G_j = self.G[self.age]
         c = np.empty(N); db = np.empty(N); da = np.empty(N)
         w = work
@@ -1493,10 +1544,10 @@ class Macro:
         # 6. goods market at posted prices; households and investing firms buy from the same firms
         S_h = P * c
         S_I = P_g * I_plan
-        S_tot = S_h.sum() + S_I.sum()
+        S_tot = S_h.sum() + S_I.sum() + S_D.sum()
         sec, nsec = self.sec, 2
         if mp.services and mp.weiss:
-            S_sec = np.array([(1 - mp.s_sv) * S_h.sum() + S_I.sum(), mp.s_sv * S_h.sum()])
+            S_sec = np.array([(1 - mp.s_sv) * S_h.sum() + S_I.sum() + S_D.sum(), mp.s_sv * S_h.sum()])
         else:
             S_sec = np.array([S_tot, 0.0])
         Ssec_f = S_sec[sec]
@@ -1545,6 +1596,9 @@ class Macro:
             c_real = S_h * fill / Pp_s[0]
         P_paid = spent / max(sold.sum(), 1e-12)
         I_real = S_I * fill_g / Pp_s[0]
+        if mp.durables:
+            self.dur = self.dur + gap_buy * fill_g             # durables delivered (rationed with other goods)
+            self._D_real = float(S_D.sum() * fill_g / Pp_s[0])
         self.m += revenue - S_I * fill_g
         S_I_f = P_g * I_plan
         if getattr(self, "_ell", None) is not None:          # depreciation rises with utilization
@@ -1577,7 +1631,7 @@ class Macro:
         self.share_prev = revenue / np.maximum(secsum(revenue), 1e-12)   # share of its sector
 
         # 7. settlement
-        db = db + S_h * (1 - fill_h)                            # unspent cash stays in the buffer
+        db = db + S_h * (1 - fill_h) + (S_D * (1 - fill_g) if mp.durables else 0.0)                            # unspent cash stays in the buffer
         if mp.fund:
             if mp.two_accounts:
                 # checking pays nothing; savings pay rb. Baumol-Tobin: the checking balance that minimizes transfer
@@ -1627,7 +1681,7 @@ class Macro:
         # government: interest on its account
         g_int = (rb if self.g > 0 else i) * self.g
         # bank
-        prof_B = int_f.sum() + max(-g_int, 0.0) - int_hh - m_int.sum() - max(g_int, 0.0) - loss.sum() - f_int
+        prof_B = int_f.sum() + max(-g_int, 0.0) - int_hh - m_int.sum() - max(g_int, 0.0) - loss.sum() - f_int + self._int_inst
         self.E_B += prof_B
         div_B = max(0.0, self.E_B - mp.cap_B * (self.loan.sum() + max(-self.g, 0.0)))
         self.E_B -= div_B
@@ -1700,6 +1754,10 @@ class Macro:
             if mp.fund:
                 self.Fc -= self.a[dead].sum()                 # fund pays out estates' balances
             self.div_pending[dead] = 0.0; self.b[dead] = 0; self.a[dead] = 0
+        if mp.durables and getattr(self, "L_inst", None) is not None:
+            self.E_B -= self.L_inst[dead].sum()                # installment balances of the deceased are charged off
+            self.L_inst[dead] = 0.0; self.n_inst[dead] = 0; self.pay_inst[dead] = 0.0
+            self.dur[dead] = 0.5 * mp.dur_theta * self.yhat[dead] / max(P_g, 1e-12)
         self.age[dead] = 0; self.emp[dead] = True
         self.kappa[dead] = hp.kappa0; self.pens[dead] = 0
         self.emp = emp | (self.age >= hp.J_W) | dead
