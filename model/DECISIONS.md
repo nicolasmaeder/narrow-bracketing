@@ -146,3 +146,8 @@ The bank prices each firm's loan for its expected loss: PD = pd0 (cov_ref / cove
 - Measured unemployment weights people by skill (efficiency units); headcount gives 6.1% against 5.9% (correlation 0.99).
 - **Final default calibration (4 seeds, quarters 300-600):** u 4.5-4.9% (s.d. 0.9-1.6), inflation 2.5-2.9%, growth 1.8-2.0%, price over marginal cost 1.6, wage share 0.43-0.46, K/Y 1.15-1.25, wealth/GDP 6.5, prices change 35-38% of quarters.
 
+### Where the excess deflation comes from (Nov 23, end of session)
+
+- 2008 scenario under flat marginal cost (utilization, hoard = 0.3, eps = 6; 8 seeds): the recovery becomes slow, as after 2008 (u stays 1-2 points high for about ten years, output 3-4% below for several years). But deflation is no smaller: the price level falls 11% within a year and the real wage jumps 11%. So steep marginal cost is not the source. With spare capacity, each firm cuts its price to win customers from rivals who all do the same: the customer-market price war, now in a slump. Blinder et al. (1998) rank coordination failure among the top reasons firms do not cut prices.
+- The candidate fix is `share_learn` (firms learn how much share a relative price cut actually wins). With the current defaults it makes the start-up much worse (u 35-43% for over 100 quarters): its moments start at zero, so the learned slope swings early. It needs moments initialized at the prior. Then test the 2008 scenario with utilization + share_learn: the target is slow recovery with core-like disinflation.
+
