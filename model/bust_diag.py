@@ -4,10 +4,11 @@ from multiprocessing import Pool
 from run_macro import build
 H=40
 KW=json.loads(sys.argv[1]) if len(sys.argv)>1 else {}
+SIZE=float(sys.argv[2]) if len(sys.argv)>2 else 0.3
 def run(seed):
     m=build(seed=seed, **KW)
     for t in range(400): m.step()
-    m._mrp=None; a,b=copy.deepcopy(m),copy.deepcopy(m); b.vshock=0.7
+    m._mrp=None; a,b=copy.deepcopy(m),copy.deepcopy(m); b.vshock=1-SIZE
     A=[a.step() for _ in range(H)]; B=[b.step() for _ in range(H)]
     g=lambda R,k: np.array([r[k] for r in R],float)
     return dict(u=100*(g(B,'u')-g(A,'u')), nocutB=g(B,'nocut_bind'), nocutA=g(A,'nocut_bind'),

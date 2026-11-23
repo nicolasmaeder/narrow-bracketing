@@ -75,7 +75,7 @@ class MParams:
         self.phi_W = 0.05
         self.w_index = 0.5          # indexation to observed inflation; the rest anchored at the target
         self.lam_W = 0.995
-        self.g_pi = 0.25            # gain on observed inflation
+        self.g_pi = 0.1             # gain on observed inflation (firms' expectations move slowly; Candia, Coibion and Gorodnichenko)
         self.fix_policy = False     # diagnostics: policy rate frozen (shocks still pass through)
         self.fix_wage = False       # diagnostics: wage grows at the inflation target
         self.div_to_fund = False    # diagnostics: firm and bank profits credited to retirement balances
@@ -109,7 +109,7 @@ class MParams:
         self.wage_forecast = True   # firms forecast market pay growth from published inflation and unemployment
         self.g_F = 0.02             # forgetting rate of that forecast (discounted least squares)
         self.review_q = 4           # quarters between a firm's wage reviews (staggered across firms): annual
-        self.anchor = 0.0           # weight of the published inflation target in firms' nominal growth beliefs (off)
+        self.anchor = 0.5           # weight of the published inflation target in firms' expected inflation (as in their pay forecasts)
         self.match_el = 0.5         # elasticity of the contact rate to labor-market tightness (matching function)
         self.m_match = 0.67         # matching efficiency; None = constant contact rate
         self.c_max = 0.6            # highest quarterly contact rate (search takes time)
