@@ -907,7 +907,9 @@ class Macro:
                     We_piece = self.Wbar_obs(self.piece) * (1 + g_mkt) ** 2.5
                     if mp.piece_own_market:                   # output-paying firms benchmark against each other only
                         We = np.where(self.piece, self.Wbar_obs(self.piece), self.Wbar_obs()) * (1 + g_mkt)
-                w_post = np.maximum(self.w, self.pay_review(We * (1 + g_mkt) ** 1.5, qf, Q, r_own, We_piece))   # no nominal cuts
+                w_des = self.pay_review(We * (1 + g_mkt) ** 1.5, qf, Q, r_own, We_piece)
+                self._cut_wanted = w_des < self.w                      # the firm would cut pay if workers accepted it
+                w_post = np.maximum(self.w, w_des)                     # no nominal cuts
                 if mp.weiss and mp.commission > 0:
                     # output-paying firms: commission on last quarter's revenue per unit of effective labor; it moves
                     # with sales, down as well as up (flexible pay)
@@ -1386,6 +1388,7 @@ class Macro:
                     withdraw=-da[da < 0].sum(), kappa_mean=float(self.kappa[work].mean()),
                     markup=float(np.mean(self.p)) / uc_rec,
                     inv_sales=self.inv.sum() / max(sold.sum(), 1e-12), sig=float(np.sqrt(self.sig2).mean()),
-                    V=V.sum(), Fc=self.Fc, mult=getattr(self, 'mult', 0.0), adopt=self.adopt_last, gY=self.gY, n_ideas=self.n_ideas, pool=len(self.poolK) if mp.tech else 0,
+                    V=V.sum(), Fc=self.Fc, mult=getattr(self, 'mult', 0.0),
+                    nocut_bind=float(np.mean(self._cut_wanted[((np.arange(F) + self.t) % mp.review_q == 0)])) if hasattr(self, '_cut_wanted') else 0.0, adopt=self.adopt_last, gY=self.gY, n_ideas=self.n_ideas, pool=len(self.poolK) if mp.tech else 0,
                     AK=float(np.exp(np.mean(np.log(self.AK)))) if mp.tech else 1.0, AL=float(np.exp(np.mean(np.log(self.AL)))) if mp.tech else 1.0,
                     Lprod=float(Ld.sum()), Kuse=float(self.K.sum()), book=float((P * self.K + v * self.inv + self.m - self.loan).sum()))
