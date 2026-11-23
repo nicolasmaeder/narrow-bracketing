@@ -99,3 +99,11 @@ Idea (user): pooled, posted, per-head pay belongs to low-wage service jobs (flat
 - Pooled firms benchmark pay against their workers' outside option (`pool_outside`): observed output per head x the going wage at output-paying firms. Benchmarking against the overall average put pooled pay at the median; benchmarking against other pooled firms made it ratchet up (to 1.5x the median), since each firm wanting to grow pays above its sector's average.
 - With services (14 goods firms, 6 service firms, services 25% of consumption, `pool_outside`), 2 seeds: u 4.4% (s.d. 0.6-0.8), inflation 1.5-1.7%, service employment 32%, pooled pay 0.82 x median, earnings p10/p50 0.80 and p90/p50 2.0 (data about 0.5 and 2), price over marginal cost 1.58, wage share 0.45.
 
+### New defaults (Nov 23): two sectors, participation, neutral-rate learning, menu cost
+
+- **Services on by default** (14 goods firms paying by output, 6 service firms paying per head; services 25% of household spending; pooled pay benchmarked on the workers' outside option).
+- **Participation (`olf`).** A working-age person without a job searches if UI (paid only to searchers, for 2 quarters after a job loss) plus the published job-finding rate x a quarter's earnings covers a personal search cost, kappa x earnings. kappa is persistent per person: lognormal, median 0.1, log s.d. 1. Measured unemployment counts searchers only. Result: labor-force participation about 96.5% of working-age people, unemployment 4.4-4.6% (2 seeds, no services). Re-entry and dropping out move with the published job-finding rate.
+- **Neutral-rate learning (`rstar_learn`).** The central bank revises its neutral-rate estimate by 0.01 x the inflation miss each quarter. With a fixed 5% neutral rate, inflation ran at 1.4-1.5%. Now inflation is 2.1-2.2%.
+- **Menu cost 0.03** (was 0.035): price changes 32% of quarters at 0.035, 43% at 0.025; target 35-40%.
+- **Firm-specific efficiency (`firm_eff`, off).** With 20 firms, idiosyncratic efficiency shocks do not wash out: at a stationary s.d. of 0.25 the economy breaks (u above 60%); at 0.1, unemployment volatility rises about fourfold. Firm wages still do not track efficiency (correlation about -0.1). Realistic firm heterogeneity needs many more firms per market and a pay rule in which more productive firms want to be bigger (Burdett-Mortensen).
+

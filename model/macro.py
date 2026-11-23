@@ -73,6 +73,8 @@ class MParams:
         self.u_star = 0.05
         self.phi_pi, self.phi_u = 1.5, 0.25   # Taylor (1993): 0.5 on the output gap, about 1 on the unemployment gap (Okun), 0.25 per quarter
         self.zlb = True             # lower bound on the policy rate (off only in diagnostics)
+        self.rstar_learn = True     # neutral-rate estimate revised slowly
+        self.g_rstar = 0.01
         self.rho_i = 0.85           # interest-rate smoothing (quarterly; Clarida, Gali and Gertler 2000 estimate about 0.8)
         # wages (placeholder rule): indexation to observed inflation + response to unemployment, downward rigid
         self.phi_W = 0.05
@@ -107,7 +109,7 @@ class MParams:
         self.g_sh = 0.05            # gain of that regression (discounted least squares)
         self.w_sh = 1.0             # prior weight on the logit slope, in quarters of typical data
         self.rho_c = 0.5            # customer market: share of buyers who re-shop each quarter (1 = all re-shop, no customer base)
-        self.menu_cost = 0.035      # state-dependent pricing: change price when the expected gain exceeds this share of revenue; calibrated to the frequency of price changes (about 40% a quarter), as in Golosov-Lucas and Nakamura-Steinsson (direct measures, Zbaracki et al. 2004: about 1.2%); 0: fixed review_p
+        self.menu_cost = 0.03       # state-dependent pricing: change price when the expected gain exceeds this share of revenue; calibrated to the frequency of price changes (about 40% a quarter), as in Golosov-Lucas and Nakamura-Steinsson (direct measures, Zbaracki et al. 2004: about 1.2%); 0: fixed review_p
         self.k_full = False         # capital decision uses the wage-based labor cost (as inventory)
         self.v_full = False         # inventory valued at production cost at the wage (recruiting costs are not inventoriable), not including marginal hiring cost
         self.v_marginal = True      # unsold stock valued at the marginal cost of replacing it (internal labor cost), not at a price-level-based unit cost
@@ -169,13 +171,27 @@ class MParams:
         # two sectors: services (sold only to households, produced by pooled-pay firms: output per worker is hard to
         # measure, pay is posted per head) and goods (bought by households and as investment, produced by firms that
         # pay by measured output). Households spend a share s_sv of consumption on services (Cobb-Douglas upper tier)
-        self.services = False
+        # firm-specific efficiency (know-how, management, organization; Syverson 2011): Hicks-neutral, AR(1) in logs,
+        # quarterly persistence rho_a, stationary s.d. sd_a (within-industry TFP: 90/10 ratio about 2, s.d. of log
+        # about 0.25-0.3; persistence about 0.8 a year, Foster, Haltiwanger and Syverson 2008)
+        # participation: a working-age person without a job searches if UI (paid only to searchers, for ui_quarters
+        # after a job loss) plus the published job-finding rate x a quarter's earnings covers a personal cost of
+        # searching, kappa x earnings, with kappa persistent per person (caregiving, health, alternatives); measured
+        # unemployment counts searchers only (CPS)
+        self.olf = True
+        self.ui_quarters = 2
+        self.kappa_med = 0.1
+        self.kappa_sd = 1.0
+        self.firm_eff = False
+        self.rho_a = 0.95
+        self.sd_a = 0.25
+        self.services = True
         self.s_sv = 0.25
         self.min_wage = False
         self.kaitz = 0.45
         self.mw_review = 4
-        self.n_piece = 5            # firms paying by measured output
-        self.pool_outside = False      # pooled firms benchmark against their workers' pay at output-paying firms
+        self.n_piece = 14           # firms paying by measured output
+        self.pool_outside = True       # pooled firms benchmark against their workers' pay at output-paying firms
         self.pool_own_market = False   # pooled firms compare their pay with other pooled firms (service jobs with service jobs)
         self.piece_own_market = True   # output-paying firms compare their pay with other output-paying firms
         self.commission = 0.0       # > 0: output-paying firms pay this share of the value of output per unit of effective labor
@@ -246,6 +262,14 @@ class Macro:
         # (with variable utilization the starting point is at normal utilization 0.8)
         self.AK = np.full(F, y0 / K0 / (0.8 if mp.utilization else 1.0)) if mp.tech else None
         self.AL = np.full(F, y0 / L0) if mp.tech else None
+        self.a_eff = np.zeros(F)                     # log firm efficiency
+        self.kappa_s = mp.kappa_med * np.exp(mp.kappa_sd * self.rng.standard_normal(hp.N))   # personal search cost
+        self.ui_q = np.zeros(hp.N, int)              # quarters of UI left
+        self.search = np.ones(hp.N, bool)
+        self.f_pub = 0.5                             # published job-finding rate of searchers
+        if mp.firm_eff and mp.tech:
+            self.a_eff = mp.sd_a * self.rng.standard_normal(F)
+            self.AK = self.AK * np.exp(self.a_eff); self.AL = self.AL * np.exp(self.a_eff)
         self.AKn = None if self.AK is None else self.AK.copy()   # technique of the machines the firm now buys
         self.ALn = None if self.AL is None else self.AL.copy()
         self.lnlam0 = np.log(mp.R0) + mp.pK * np.log(mp.theta_I * y0 / K0) + mp.pL * np.log(mp.theta_I * y0 / L0)
@@ -355,6 +379,7 @@ class Macro:
         self.tau_s = None                       # smoothed budget share
         self.i_prev = mp.i_star
         self.pi_hist = [mp.pi_star] * 4
+        self.i_star_est = mp.i_star
         self.t = 0
         self.R0 = self.reserves()
 
@@ -508,19 +533,20 @@ class Macro:
             self.poolK, self.poolL = self.poolK[keep], self.poolL[keep]
         self.n_ideas = n
         wv = np.asarray(w, float)[:, None]; uv = np.asarray(uK, float)[:, None] if np.ndim(uK) else uK
-        c = self.unit_cost(wv, uv, self.poolK[None, :], self.poolL[None, :])
-        k = c.argmin(1); idx = np.arange(F)
+        hf = np.exp(self.a_eff)[:, None]                       # the firm's own efficiency applies to any technique
+        c = self.unit_cost(wv, uv, self.poolK[None, :] * hf, self.poolL[None, :] * hf)
+        k = c.argmin(1); idx = np.arange(F); hf = hf[:, 0]
         c_new = c[idx, k]
         if mp.embodied:
             # embodied: the choice is the design of the machines the firm buys from now on; installed machines keep
             # theirs (the installed technique moves toward it as new capital is installed, see the capital update)
             c_old = self.unit_cost(w, uK, self.AKn, self.ALn)
             go = (c_old - c_new) / (r_own + self.turn) > mp.adopt_cost * p
-            self.AKn = np.where(go, self.poolK[k], self.AKn); self.ALn = np.where(go, self.poolL[k], self.ALn)
+            self.AKn = np.where(go, self.poolK[k] * hf, self.AKn); self.ALn = np.where(go, self.poolL[k] * hf, self.ALn)
         else:
             c_old = self.unit_cost(w, uK)
             go = (c_old - c_new) / (r_own + self.turn) > mp.adopt_cost * p
-            self.AK = np.where(go, self.poolK[k], self.AK); self.AL = np.where(go, self.poolL[k], self.AL)
+            self.AK = np.where(go, self.poolK[k] * hf, self.AK); self.AL = np.where(go, self.poolL[k] * hf, self.AL)
         self.turn = (1 - mp.g_T) * self.turn + mp.g_T * go
         self.adopt_last = float(go.mean())
         # the adoption cost is the time of the firm's own workers (installation, retraining) this quarter
@@ -1035,10 +1061,22 @@ class Macro:
         work = self.age < hp.J_W
         W = self.W
         a_, Z = mp.alpha, mp.Z
+        job0 = self.job.copy()
+        if mp.olf:
+            nonemp = work & (self.job < 0)
+            thr = self.f_pub + hp.ui * (self.ui_q > 0)          # per unit of a quarter's earnings
+            self.search = np.where(nonemp, self.kappa_s <= thr, True)
+            part = work & ((self.job >= 0) | self.search)       # labor force
+        else:
+            part = work
 
         # 1. policy rate
         pi4 = np.mean(self.pi_hist[-4:])                      # observed inflation, last four quarters
-        rule = mp.i_star + mp.phi_pi * (pi4 - mp.pi_star) - mp.phi_u * (self.u_prev - mp.u_star)
+        if mp.rstar_learn:
+            # the central bank revises its estimate of the neutral rate when inflation keeps missing the target
+            # (Laubach-Williams style; FOMC long-run rate projections move slowly): a small step each quarter
+            self.i_star_est += mp.g_rstar * (pi4 - mp.pi_star)
+        rule = self.i_star_est + mp.phi_pi * (pi4 - mp.pi_star) - mp.phi_u * (self.u_prev - mp.u_star)
         i = max(0.0 if mp.zlb else -1.0, (self.i_prev if mp.fix_policy else mp.rho_i * self.i_prev + (1 - mp.rho_i) * rule) + i_shock)
         self.i_prev = i - i_shock
         # 2. bank and government post
@@ -1069,6 +1107,11 @@ class Macro:
         if mp.market_belief:                                  # expected demand = own position x expected size of the market
             self.lnA = self.ln_a + np.log(self.S_last * np.exp(self.gS) / self.P_ref())
         self._adopt_L = np.zeros(F)
+        if mp.firm_eff and mp.tech:                           # firm efficiency shock (applies to all its machines)
+            da = (mp.rho_a - 1) * self.a_eff + mp.sd_a * np.sqrt(1 - mp.rho_a ** 2) * self.rng.standard_normal(F)
+            self.a_eff = self.a_eff + da
+            self.AK = self.AK * np.exp(da); self.AL = self.AL * np.exp(da)
+            self.AKn = self.AKn * np.exp(da); self.ALn = self.ALn * np.exp(da)
         if mp.tech and mp.exo_g > 0:                          # diagnostic: smooth exogenous labor-augmenting growth
             ge = mp.exo_g * min(1.0, self.t / mp.exo_ramp) if mp.exo_ramp else mp.exo_g
             self.AL = self.AL * np.exp(ge); self.poolL = self.poolL * np.exp(ge)
@@ -1289,10 +1332,10 @@ class Macro:
         Ld_req = Ld.copy()                                    # production labor the firm asks for
 
         # 4. labor market (efficiency units)
-        Lforce = np.where(work, self.z, 0.0)
+        Lforce = np.where(part, self.z, 0.0)
         if mp.wage_posting:
             if mp.vacancies:
-                Ld, emp, quits, apps, V, L_prev = self.labor_market(w_post, We, L_keep, work, L_target=L_tgt, q_fill=qf,
+                Ld, emp, quits, apps, V, L_prev = self.labor_market(w_post, We, L_keep, part, L_target=L_tgt, q_fill=qf,
                                                                     hires=H_want if mp.hiring == "convex" else None)
                 if mp.weiss:                                      # each firm observes its workers' average output
                     heads = np.bincount(self.job[self.job >= 0], minlength=F).astype(float)
@@ -1370,7 +1413,16 @@ class Macro:
         # 5. households
         wage_h = np.where(emp, (1 - tau) * (self.w[np.maximum(self.job, 0)] if mp.wage_posting else W)
                           * (self.earn_fac(self.job) if mp.weiss else self.z), 0.0)
-        benefit = np.where(work & ~emp, hp.ui * W * self.z, 0.0)
+        if mp.olf:
+            lost = (job0 >= 0) & (self.job < 0) & work
+            self.ui_q = np.where(emp, 0, np.where(lost, mp.ui_quarters, np.maximum(self.ui_q - 1, 0)))
+            sk = part & (job0 < 0)
+            if sk.any():
+                self.f_pub = 0.75 * self.f_pub + 0.25 * float(np.mean(self.job[sk] >= 0))
+            benefit = np.where(part & ~emp & ((self.ui_q > 0) | lost), hp.ui * W * self.z, 0.0)
+            self._lfpr = float(part.sum() / max(work.sum(), 1))
+        else:
+            benefit = np.where(work & ~emp, hp.ui * W * self.z, 0.0)
         pension = np.where(~work, self.pens * W, 0.0)
         if emp.any():
             self.med_earn = float(np.median((self.w[self.job[emp]] if mp.wage_posting else W) * (self.earn_fac(self.job[emp], self.z[emp]) if mp.weiss else self.z[emp])))
