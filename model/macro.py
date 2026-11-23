@@ -475,6 +475,8 @@ class Macro:
             S_f, mu_f, val_f = solve(self._p_old[:, None])
             gain = val2[idx, k2] - val_f[:, 0]
             rv = gain > self.mp.menu_cost * self._p_old * mu_f[:, 0]
+            self._gain_rel = gain / np.maximum(self._p_old * mu_f[:, 0], 1e-12)
+            self._dp_opt = np.log(p_o / self._p_old)
             self._rev_p = rv
             p_o = np.where(rv, p_o, self._p_old); S_o = np.where(rv, S_o, S_f[:, 0]); mu_o = np.where(rv, mu_o, mu_f[:, 0])
         elif self.mp.review_p > 1 and getattr(self, "_p_old", None) is not None:
