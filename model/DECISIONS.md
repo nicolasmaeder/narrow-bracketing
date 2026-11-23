@@ -40,3 +40,12 @@ Policy rules (the central bank's interest-rate rule and the government's tax rul
 - **Ideas:** pairs of capital and labor productivity with independent Pareto tails, public, arriving at a rate that grows at a fixed rate (research effort; Jones 2005; Kortum 1997). No aggregate production function is assumed; its long-run form and the direction of technical change are outcomes.
 
 Pay review timing is fixed. Price timing is state-dependent: whether to change price is itself a decision (menu cost), so the frequency of price changes responds to policy.
+
+## Open: variable utilization (Nov 2026)
+
+Diagnosis of why the economy breaks with utilization on (u about 20%):
+- Not a customer price war. An option where firms learn how much share their relative price actually wins (`share_learn`, discounted least squares against the logit prediction, prior at 1) gives a learned slope of about 1 in the baseline and does not help with utilization on.
+- The demand elasticity eps = 7.7 was calibrated under a steep short-run marginal cost. With flat marginal cost the markup over variable cost alone must cover capital, which needs eps of about 4.5.
+- The main amplifier is the fund's valuation: firms are valued at one year of trailing earnings (g_earn = 0.25). With lower margins, earnings and household wealth fall 98% within 30 quarters, consumption falls 45%, and the policy rate sits at zero.
+- With a ten-year memory (g_earn = 0.025, the horizon of Shiller's CAPE), the baseline unemployment s.d. falls from 2–3 points to 0.5 and the 20% asset bust raises unemployment only 2 points. With utilization on, u is still about 10% with capacity nearly full: capacity is planned on normal sales, and sales are capped by capacity, so capacity can stay too small.
+

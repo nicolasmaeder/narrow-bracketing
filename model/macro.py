@@ -98,6 +98,11 @@ class MParams:
         self.censored = False       # True: firms see only sales and sell-outs (censored); False: they also see backorders (orders placed with them that they could not fill), not spillover from rivals
         self.cap_aware = True       # firms price for the output the labor they expect to get can make
         self.stockout_loss = 0.3    # share of customers turned away by a stockout who switch sellers (Anderson, Fitzsimons and Simester 2006)
+        self.share_learn = False    # firms learn how much share their relative price actually wins (rivals co-move;
+                                    # Blinder et al. 1998 coordination failure): regression of own share changes on
+                                    # the logit prediction from own price relative to the expected index
+        self.g_sh = 0.05            # gain of that regression (discounted least squares)
+        self.w_sh = 1.0             # prior weight on the logit slope, in quarters of typical data
         self.rho_c = 0.5            # customer market: share of buyers who re-shop each quarter (1 = all re-shop, no customer base)
         self.menu_cost = 0.035      # state-dependent pricing: change price when the expected gain exceeds this share of revenue; calibrated to the frequency of price changes (about 40% a quarter), as in Golosov-Lucas and Nakamura-Steinsson (direct measures, Zbaracki et al. 2004: about 1.2%); 0: fixed review_p
         self.k_full = False         # capital decision uses the wage-based labor cost (as inventory)
@@ -256,6 +261,9 @@ class Macro:
         self.share_prev_used = self.share_prev.copy()
         self.cust = np.full(F, 1 / F)                 # customer base (share of buyers who buy from the firm)
         self._Stot = 0.0
+        self.lam_sh = np.ones(F)
+        self.sh_m = np.zeros((4, F))
+        self.sh_v0 = 0.01                     # typical quarterly variance of the logit prediction (set from the baseline)
         # ---------------- labor market state: who works where, posted wages, firms' beliefs
         self.job = np.full(N, -1)
         ew = np.nonzero(self.emp & work)[0]
@@ -534,7 +542,8 @@ class Macro:
                 # customer market: the firm values the customers its price wins or loses at the margin they bring in
                 # over the expected life of the relationship (static beliefs), CLV = Stot (1 - mc/p) / (r + rho)
                 sh = self.cust[:, None]
-                Lp = sh * (p / Pref) ** (-mp.eps * (1 - sh))
+                lam = self.lam_sh[:, None] if mp.share_learn else 1.0
+                Lp = sh * (p / Pref) ** (-lam * mp.eps * (1 - sh))
                 mc = v[:, None] * (1 + rL[:, None] if np.ndim(rL) else 1 + rL) / (1 - mp.inv_decay)
                 clv = self._Stot * np.maximum(1 - mc / p, 0.0) / ((rL[:, None] if np.ndim(rL) else rL) + mp.rho_c)
                 served = np.minimum(1.0, Emin / np.maximum(mu, 1e-12))      # share of demand it expects to serve
@@ -780,8 +789,9 @@ class Macro:
         each quarter, so the short-run elasticity is 1 + rho_c eps (1 - s)."""
         mp = self.mp
         s = self.share_prev if share is None else share
+        lam = self.lam_sh if (mp.share_learn and getattr(self, "lam_sh", None) is not None) else 1.0
         if mp.rho_c < 1:
-            return 1 + (mp.rho_c if short else 1.0) * mp.eps * (1 - s)
+            return 1 + (mp.rho_c if short else 1.0) * lam * mp.eps * (1 - s)
         return mp.eps * (1 - s)
 
     def anchored(self, g_obs):
@@ -1285,7 +1295,20 @@ class Macro:
         wts = (self.p / P) ** (-mp.eps) * np.exp(mp.taste_sd * self.rng.standard_normal(F))
         if mp.rho_c < 1:
             # customer market: a share rho_c of buyers shop around (logit); the rest stay with their seller
+            cust_old = self.cust.copy()
             self.cust = (1 - mp.rho_c) * self.cust + mp.rho_c * wts / wts.sum()
+            if mp.share_learn:
+                # what the firm sees: its price relative to the index it expected, and the change in its customer
+                # share; the logit slope with rivals' prices as expected predicts z; the firm estimates how much of
+                # z it actually gets (lam), by discounted least squares with a prior at 1
+                zz = -mp.rho_c * mp.eps * (1 - cust_old) * np.log(self.p / self.Pref_used)
+                yy = np.log(self.cust / np.maximum(cust_old, 1e-12))
+                g = mp.g_sh
+                self.sh_m = (1 - g) * self.sh_m + g * np.stack([zz, yy, zz * zz, zz * yy])
+                mz, my, szz, szy = self.sh_m
+                vz = np.maximum(szz - mz * mz, 0.0); cz = szy - mz * my
+                w0 = mp.w_sh * self.sh_v0
+                self.lam_sh = np.clip((w0 + cz) / (w0 + vz), 0.0, 1.5)
             q_dem = self.cust * S_tot / self.p
         else:
             q_dem = (wts / wts.sum()) * S_tot / self.p
