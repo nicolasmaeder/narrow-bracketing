@@ -17,7 +17,8 @@ def run(seed):
     return dict(u=100*(g(B,'u')-g(A,'u')), nocutB=g(B,'nocut_bind'), nocutA=g(A,'nocut_bind'),
                 rw=100*(np.log(g(B,'W')/g(B,'P'))-np.log(g(A,'W')/g(A,'P'))), pi=400*(g(B,'pi')-g(A,'pi')), i=400*(g(B,'i')-g(A,'i')),
                 C=100*np.log(g(B,'C')/g(A,'C')), I=100*np.log(g(B,'I')/g(A,'I')), Y=100*np.log(g(B,'Y')/g(A,'Y')), P=100*np.log(g(B,'P')/g(A,'P')), tech=100*(np.array(tB)-np.array(tA)), prodY=100*(np.log(g(B,'Y')/(1-g(B,'u')))-np.log(g(A,'Y')/(1-g(A,'u')))), laid=np.array([r.get('laid',0) for r in B],float))
-with Pool(2) as p: R=p.map(run,[1,2,3,4])
+SEEDS=list(range(1,int(__import__("os").environ.get("NSEEDS","4"))+1))
+with Pool(2) as p: R=p.map(run,SEEDS)
 print(KW)
 for k in ['u','nocutB','rw','P','pi','i','C','I','Y','prodY','tech']:
     x=np.mean([r[k] for r in R],0); print('%-7s'%k,' '.join('%+.2f'%v for v in x[0:60:4]))

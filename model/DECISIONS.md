@@ -61,3 +61,9 @@ The channels tested and ruled out: no customer market (rho_c = 1; deflation smal
 
 Fix (default): Weiss (1980) adverse selection in hiring and quits, the user's JMP mechanism and Campbell and Kamlani's (1997) leading reason firms do not cut pay. Pay then buys worker quality even for a shrinking firm. Bust (4 seeds): u +2.5 points for about three years with slow recovery, output -3%, investment -7%, consumption -3%, price level -8% (data: core prices about -4% relative to trend in 2008-11). Long run (4 seeds): u 3.2-3.6% (s.d. 1.3-1.6), inflation 1.4-1.7%, growth 1.5-1.65%, wage share 0.47, K/Y 1.2-1.3, wealth/GDP 6.7, price changes 27-30% a quarter (below the 35-40% target; the menu cost needs recalibrating), measured price over marginal cost about 1.9 (measured at posted pay per head, not per unit of quality).
 
+### Robustness of the Weiss result (16 seeds) and the skill distribution
+
+16 seeds, 20% asset bust. Weiss on (default): u +2.5 points for about three years, then back to baseline. Output -2 to -3% for two to three years, price level -5 to -7%. Weiss off: u +2.5 points at the peak but gone within a year, then below baseline; output barely moves; price level -10.5%. The default stands.
+
+Caveat (the user's JMP, Fire_Sale.tex, appendix A.4, following Weiss 1980): a true Weiss wage floor exists only if output per dollar, E[q | q <= q*] / q*, has an interior maximum. Under the lognormal skill distribution (the default, s.d. 0.5) this ratio falls monotonically in q* at every dispersion, so there is no floor. Under lognormal, quality enters pay setting as a reason pay is worth something to a shrinking firm, not as a floor. With a mass at low skill (rectified normal, z_min 0.05) the ratio peaks at about half of workers, so a floor exists. On 4 seeds that version gives a smaller recession and more deflation; it is not yet calibrated (the floor binds in normal times).
+
