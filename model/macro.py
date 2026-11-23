@@ -216,10 +216,10 @@ class MParams:
         # gap share x income, covers the user cost (borrowing rate + depreciation) of the gap plus a fixed cost
         # dur_F x income: (S,s) under fixed adjustment costs (Grossman and Laroque 1990). Higher rates widen the band
         self.durables = False
-        self.dur_theta = 2.0
+        self.dur_theta = 3.0
         self.dur_delta = 0.05
-        self.dur_psi = 0.255
-        self.dur_F = 0.02
+        self.dur_psi = 0.34
+        self.dur_F = 0.064         # replacement about every 16 quarters
         self.inst_n = 20            # installment (auto) loans: quarters to repay
         self.inst_spread = 0.005    # over the bank loan rate, per quarter
         self.inst_down = 0.1        # down payment share
@@ -1489,20 +1489,27 @@ class Macro:
             dstar = mp.dur_theta * self.yhat / P_g
             gap = np.maximum(dstar - self.dur, 0.0)
             ann = r_a / (1 - (1 + r_a) ** (-mp.inst_n))
-            new_pay = (1 - mp.inst_down) * P_g * gap * ann
-            dti_ok = (np.where(self.n_inst > 0, self.pay_inst, 0.0) + new_pay) <= mp.inst_dti * self.yhat
-            down_ok = self.b + y_h - pay >= mp.inst_down * P_g * gap
+            # pay cash out of the buffer above its target (cash earns less than the loan costs); finance the rest
+            # (at least the down payment share of the financed part in cash)
+            excess = np.maximum(self.b + y_h - pay - hp.beta * self.yhat, 0.0)
+            price_ = P_g * gap
+            fin = np.maximum(price_ - excess, 0.0)
+            loan_amt = (1 - mp.inst_down) * fin
+            new_pay = loan_amt * ann
+            dti_ok = (loan_amt <= 0) | ((np.where(self.n_inst > 0, self.pay_inst, 0.0) + new_pay) <= mp.inst_dti * self.yhat)
+            down_ok = self.b + y_h - pay >= price_ - loan_amt
             buy = (gap / np.maximum(dstar, 1e-12) >= thr) & dti_ok & down_ok & (gap > 0)
             gap_buy = np.where(buy, gap, 0.0)
             S_D = P_g * gap_buy
-            loan_new = (1 - mp.inst_down) * S_D                # the bank's loan creates the deposit that pays the seller
+            loan_new = np.where(buy, loan_amt, 0.0)            # the bank's loan creates the deposit that pays the seller
             # the new loan is consolidated with any old balance into one new annuity
             Lnew = self.L_inst + loan_new
-            self.L_inst = np.where(buy, Lnew, self.L_inst)
-            self.r_inst = np.where(buy, r_a, self.r_inst)
-            self.n_inst = np.where(buy, mp.inst_n, self.n_inst)
-            self.pay_inst = np.where(buy, Lnew * ann, self.pay_inst)
-            cash_D += mp.inst_down * S_D                       # down payment
+            nb = buy & (loan_new > 0)
+            self.L_inst = np.where(nb, Lnew, self.L_inst)
+            self.r_inst = np.where(nb, r_a, self.r_inst)
+            self.n_inst = np.where(nb, mp.inst_n, self.n_inst)
+            self.pay_inst = np.where(nb, Lnew * ann, self.pay_inst)
+            cash_D += S_D - loan_new                           # cash part (down payment, or all of it)
             self._loan_new_D = loan_new
         m_cash = self.b + y_h - cash_D
         G_j = self.G[self.age]
