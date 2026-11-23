@@ -73,3 +73,9 @@ Policy rule: earnings per worker at least W_min, revised every 4 quarters to kai
 
 Finding: it does not bind at pooled firms (0% of employed within 5% of the minimum), and it removes the output-paying option for 13% of workers (30% at kaitz 0.6). Unemployment is unchanged within noise. The reason is structural: 74% of workers are at pooled firms, which all pay about the same per head, so the pooled wage is the median. Earnings p10/p50 is 0.99 (data, hourly: about 0.5) and p90/p50 is 1.45 (data: about 2). The model has no low-wage jobs for a minimum to bind on.
 
+### Pooled pay as the bottom of the wage distribution (service jobs), in progress
+
+Idea (user): pooled, posted, per-head pay belongs to low-wage service jobs (flat posted rates, bunching at the minimum: Cengiz et al. 2019; posting more common for less-educated workers: Hall and Krueger 2012). Pay by measured output belongs to the rest.
+- Pooled firms' pay review measured turnover against the overall going wage (quit elasticity 8), so pooled pay stayed at about 1.03 x the market average even though cost per unit of quality is lowest at the lowest pay (lognormal). New options: `x_lo`/`x_hi` (pay range considered) and `pool_own_market` (pooled firms benchmark against pooled firms, as output-paying firms do among themselves).
+- With pooled firms the majority (15 of 20), the pooled wage is the median by construction. With 14-15 output-paying firms, pooled pay falls to 0.75 x median and earnings p10/p50 = 0.6, p90/p50 = 1.9 (data: about 0.5 and 2). But the pooled firms shrink to 3-5% of employment: they sell the same good as output-paying firms at a higher cost per unit of quality and lose customers. In the data, low-wage services are a separate product market. Next: a service good with its own expenditure share, so that demand pins the size of the pooled sector.
+

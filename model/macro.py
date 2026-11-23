@@ -163,10 +163,12 @@ class MParams:
         # minimum wage (policy rule): earnings per worker may not fall below W_min; revised every mw_review quarters to
         # kaitz times the published median earnings of employed workers (indexed state minimums; Kaitz index 0.37-0.59
         # across states, 0.28 for the federal minimum alone)
+        self.x_lo, self.x_hi = 0.7, 1.4   # range of relative pay a pay review considers
         self.min_wage = False
         self.kaitz = 0.45
         self.mw_review = 4
         self.n_piece = 5            # firms paying by measured output
+        self.pool_own_market = False   # pooled firms compare their pay with other pooled firms (service jobs with service jobs)
         self.piece_own_market = True   # output-paying firms compare their pay with other output-paying firms
         self.commission = 0.0       # > 0: output-paying firms pay this share of the value of output per unit of effective labor
                                     # (commission contract, like the JMP's capital sector paying the value of output); quarterly
@@ -734,7 +736,7 @@ class Macro:
             min over x:  x We [1 + (r + sep + Q x^-eta) c_v / min(1, a x^eta)],
         with We the market pay expected over the coming year (last observed x last year's market growth). The
         answer does not depend on the firm's sales: those set how many it hires, not what it pays."""
-        xg = np.linspace(0.7, 1.4, 281)[None, :]
+        xg = np.exp(np.linspace(np.log(self.mp.x_lo), np.log(self.mp.x_hi), 281))[None, :]
         mp, hp = self.mp, self.hp
         if mp.pay_hiring and gL is not None:
             # cost per worker per quarter given the hiring the firm plans: pay plus the recruiting time needed for the
@@ -1064,7 +1066,7 @@ class Macro:
                 if mp.weiss:                                  # pooled firms also look at published pay at output-paying firms
                     We_piece = self.Wbar_obs(self.piece) * (1 + g_mkt) ** 2.5
                     if mp.piece_own_market:                   # output-paying firms benchmark against each other only
-                        We = np.where(self.piece, self.Wbar_obs(self.piece), self.Wbar_obs()) * (1 + g_mkt)
+                        We = np.where(self.piece, self.Wbar_obs(self.piece), self.Wbar_obs(~self.piece) if mp.pool_own_market else self.Wbar_obs()) * (1 + g_mkt)
                 w_des = self.pay_review(We * (1 + g_mkt) ** 1.5, qf, Q, r_own, We_piece, self.gL_plan)
                 self._cut_wanted = w_des < self.w                      # the firm would cut pay if workers accepted it
                 w_post = np.maximum(self.w, w_des)                     # no nominal cuts
