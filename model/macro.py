@@ -29,7 +29,7 @@ residual, must stay exactly at zero.
 from __future__ import annotations
 import copy
 import numpy as np
-from scipy.special import ndtr
+from scipy.special import ndtr, ndtri
 from household import Params as HParams, Economy, retirement_target, solve_accounts
 
 
@@ -159,6 +159,16 @@ class MParams:
         self.commission = 0.0       # > 0: output-paying firms pay this share of the value of output per unit of effective labor
                                     # (commission contract, like the JMP's capital sector paying the value of output); quarterly
         self.search_rounds = 6      # application rounds per quarter for unemployed contacts (a quarter has many weeks of search)
+        # variable capital utilization (Greenwood, Hercowitz and Huffman): running machines harder wears them out.
+        # Depreciation per quarter = delta0 + delta1 u, u in [0, u_max]. Below capacity, extra output needs labor
+        # plus more intensive use of the existing machines, so short-run marginal cost is flat (Blinder et al. 1998:
+        # most firms report constant or falling marginal cost); capacity is chosen for normal orders under uncertainty
+        self.utilization = False   # on: see README (destabilizes for now)
+        self.u_bar = 0.8            # normal (design) utilization
+        self.k_speed = 0.25         # share of the gap to desired capacity closed per quarter (time to build)
+        self.u_max = 1.0
+        self.delta1 = 0.0125        # wear per unit of utilization (at u = 0.8: 0.01, half of depreciation)
+        self.cap_sd = 0.15          # uncertainty about normal orders over capital's horizon (log s.d.)
         self.plan_price = True      # production planned at next quarter's planned price, not this quarter's rationing price
         self.jorgenson = True       # user cost of capital nets out expected capital-goods inflation
         self.pay_hiring = True      # pay review prices the hiring the firm plans (demand-dependent pay)
@@ -205,10 +215,11 @@ class Macro:
         y0 = Z * K0 ** a_ * L0 ** (1 - a_)
         # technique: CES normalized at the starting point (capital share alpha), so the start is the same economy
         self.rho = 1 - 1 / mp.sigma_f
-        self.AK = np.full(F, y0 / K0) if mp.tech else None
+        # (with variable utilization the starting point is at normal utilization 0.8)
+        self.AK = np.full(F, y0 / K0 / (0.8 if mp.utilization else 1.0)) if mp.tech else None
         self.AL = np.full(F, y0 / L0) if mp.tech else None
         self.lnlam0 = np.log(mp.R0) + mp.pK * np.log(mp.theta_I * y0 / K0) + mp.pL * np.log(mp.theta_I * y0 / L0)
-        self.poolK = np.array([y0 / K0]); self.poolL = np.array([y0 / L0])   # stock of known ideas (useful part)
+        self.poolK = np.array([self.AK[0] if mp.tech else y0 / K0]); self.poolL = np.array([y0 / L0])   # stock of known ideas (useful part)
         self.n_ideas = 0
         self.wp_lr = np.full(F, 1.0 / P0)        # firm's long-run real wage (discounted average)
         self.s_lr = np.full(F, y0)               # firm's normal sales (discounted average of its own)
@@ -311,6 +322,31 @@ class Macro:
         return (a_ ** s * (cK / AK) ** (1 - s) + (1 - a_) ** s * (W / AL) ** (1 - s)) ** (1 / (1 - s))
 
     # ---------------------------------------------------------------- the firm's technology
+    def util_setup(self, W):
+        """Short-run cost structure for the quarter at the firm's wage W: with utilization variable, capital services
+        cost c_s = delta1 P per unit (wear), so below capacity output costs the CES unit cost c(W, c_s) per unit, with
+        labor ell and capital services kx per unit of output; capacity is u_max K / kx."""
+        mp = self.mp
+        if not (mp.utilization and mp.tech):
+            self._ell = None; return
+        s_ = mp.sigma_f; om = mp.alpha
+        W = np.broadcast_to(np.asarray(W, float), (mp.F,)).copy()
+        P = self.P_ref()
+        cs = mp.delta1 * P
+        # putty-clay: machines are built for a capital-labor ratio chosen at long-run factor prices (the long-run
+        # rental of capital); in the short run labor and machine-hours are used in that ratio
+        uK_lr = P * np.maximum(self.r_lr_f - self.anchored(self.pi_e) + mp.delta, 1e-3)
+        Wd = self.wp_lr * P if mp.invest_lr else W                # the long-run wage the machines were planned for
+        c_lr = self.unit_cost(Wd, uK_lr)
+        self._cs = cs
+        self._ell = (1 - om) ** s_ * (Wd / self.AL) ** (-s_) / self.AL * c_lr ** s_
+        self._kx = om ** s_ * (uK_lr / self.AK) ** (-s_) / self.AK * c_lr ** s_   # capital services (u K) per unit
+        self._ycap = mp.u_max * self.K / self._kx
+
+    def _uparams(self, nd):
+        sh = (-1,) + (1,) * (nd - 1)
+        return self._ell.reshape(sh), self._ycap.reshape(sh)
+
     def _tk(self, nd, K=None):
         sh = (-1,) + (1,) * (nd - 1)
         K = self.K if K is None else K
@@ -321,6 +357,14 @@ class Macro:
     def prod(self, L, K=None):
         """Output from labor L (and capital K) with the firm's technique."""
         L = np.asarray(L, float); mp = self.mp
+        if K is None and getattr(self, "_ell", None) is not None:
+            ell, ycap = self._uparams(L.ndim)
+            above = self._prod_ces(L, mp.u_max * self.K)
+            return np.where(L <= ell * ycap, np.maximum(L, 0) / ell, np.maximum(above, ycap))
+        return self._prod_ces(L, K)
+
+    def _prod_ces(self, L, K=None):
+        L = np.asarray(L, float); mp = self.mp
         ek, AL = self._tk(L.ndim, K)
         if not mp.tech:
             return mp.Z * ek ** mp.alpha * np.maximum(L, 0) ** (1 - mp.alpha)
@@ -329,6 +373,13 @@ class Macro:
 
     def L_need(self, y, K=None):
         """Labor needed to make y. With low substitution capital limits capacity; output is capped below it."""
+        y = np.asarray(y, float); mp = self.mp
+        if K is None and getattr(self, "_ell", None) is not None:
+            ell, ycap = self._uparams(y.ndim)
+            return np.where(y <= ycap, np.maximum(y, 0) * ell, self._L_need_ces(y, mp.u_max * self.K))
+        return self._L_need_ces(y, K)
+
+    def _L_need_ces(self, y, K=None):
         y = np.asarray(y, float); mp = self.mp
         ek, AL = self._tk(y.ndim, K)
         if not mp.tech:
@@ -342,6 +393,18 @@ class Macro:
     def mc_y(self, W, y, K=None):
         """Marginal labor cost of output, W / MPL at the labor that makes y (steeply rising beyond capacity)."""
         y = np.asarray(y, float); mp = self.mp
+        if K is None and getattr(self, "_ell", None) is not None:
+            # below capacity: the unit cost at the wage and the wear cost of capital services (flat); above: labor
+            # added to machines at full utilization
+            ell, ycap = self._uparams(y.ndim)
+            Wb = np.asarray(W, float)
+            sh = (-1,) + (1,) * (y.ndim - 1)
+            c = Wb * ell + self._cs * self._kx.reshape(sh)       # short-run marginal cost: labor + machine wear
+            return np.where(y <= ycap, c + 0 * y, np.maximum(self._mc_ces(Wb, y, mp.u_max * self.K), c))
+        return self._mc_ces(W, y, K)
+
+    def _mc_ces(self, W, y, K=None):
+        y = np.asarray(y, float); mp = self.mp
         ek, AL = self._tk(y.ndim, K)
         if not mp.tech:
             return W / (1 - mp.alpha) * np.maximum(y, 0) ** (mp.alpha / (1 - mp.alpha)) / (mp.Z * ek ** mp.alpha) ** (1 / (1 - mp.alpha))
@@ -354,7 +417,14 @@ class Macro:
 
     def mpl(self, L, K=None):
         L = np.maximum(np.asarray(L, float), 1e-12); mp = self.mp
-        y = self.prod(L, K)
+        if K is None and getattr(self, "_ell", None) is not None:
+            ell, ycap = self._uparams(L.ndim)
+            return np.where(L <= ell * ycap, 1.0 / ell + 0 * L, self._mpl_ces(L, mp.u_max * self.K))
+        return self._mpl_ces(L, K)
+
+    def _mpl_ces(self, L, K=None):
+        L = np.maximum(np.asarray(L, float), 1e-12); mp = self.mp
+        y = self._prod_ces(L, K)
         if not mp.tech:
             return (1 - mp.alpha) * y / L
         ek, AL = self._tk(L.ndim, K)
@@ -499,10 +569,13 @@ class Macro:
             min over K':  W L(s_hat, K') + P (rL + delta) K' + phi P K ((K' - K)/K)^2 / 2,  K' >= (1-delta) K."""
         mp = self.mp; a_, Z = mp.alpha, mp.Z
         P, K = self.P_ref(), self.K
+        ub = mp.u_bar if getattr(self, "_ell", None) is not None else 1.0
+        # with variable utilization, capacity is planned so that normal orders run at normal utilization u_bar
+        # (spare capacity of about 20%, as in the Federal Reserve's capacity-utilization data)
         # Jorgenson user cost: interest net of the expected rise in the price of capital goods, plus depreciation
         uK = P * (rL - (self.anchored(self.pi_e) if mp.jorgenson else 0.0) + mp.delta)
-        L = lambda Kn: self.L_need(s_hat, Kn)
-        f = lambda Kn: W * self.mpk_over_mpl(Kn, L(Kn)) - uK - mp.phi_K * P * (Kn - K) / K   # decreasing in K'
+        L = lambda Kn: self._L_need_ces(s_hat, ub * Kn) if ub < 1 else self.L_need(s_hat, Kn)
+        f = lambda Kn: W * ub * self.mpk_over_mpl(ub * Kn, L(Kn)) - uK - mp.phi_K * P * (Kn - K) / K   # decreasing in K'
         lo, hi = (1 - mp.delta) * K, 3 * K
         for _ in range(60):
             mid = 0.5 * (lo + hi)
@@ -598,7 +671,10 @@ class Macro:
         def mrp(L):
             L = np.maximum(L, 1e-9)
             y = self.prod(L)
-            return p * (y / mu) ** (-1 / e_f) * (1 - 1 / e_f) * self.mpl(L)
+            val = p * (y / mu) ** (-1 / e_f) * (1 - 1 / e_f) * self.mpl(L)
+            if getattr(self, "_ell", None) is not None:      # net of the wear on machines the worker's output needs
+                val = val - np.where(L <= self._ell * self._ycap, self._cs * self._kx / self._ell, 0.0)
+            return val
         self._mrp = mrp
         J = lambda L: np.maximum(0.0, mrp(L) - w) / (r + hp.sep + Q)
         g = lambda H: J(L_stay + H) - w * (1 + mp.psi_h) * mp.kappa_h * T * (H / Lb) ** mp.psi_h
@@ -957,6 +1033,7 @@ class Macro:
             # cost per unit of effective labor: pooled firms pay per head, so divide by the average quality they have
             qfac = np.where(self.piece, 1.0, self.zbar / np.maximum(self.qbar, 1e-6)) if mp.weiss else np.ones(F)
             w_eff = w_post * qfac
+            self.util_setup(w_eff)
             if mp.vacancies:
                 # price and stock at the wage; keep incumbents while their product covers the wage,
                 # hire toward the labor at which it covers the full cost (wage + recruiting)
@@ -1074,7 +1151,7 @@ class Macro:
             self.wp_lr = (1 - mp.g_lr) * self.wp_lr + mp.g_lr * W_K / self.P_ref()
             W_K = self.wp_lr * self.P_ref()
         K_next = self.capital(W_K, self.r_lr_f + mp.hurdle if mp.invest_lr else r_own, s_cap)
-        I_plan = np.maximum(0.0, K_next - (1 - mp.delta) * self.K)
+        I_plan = np.maximum(0.0, K_next - (1 - getattr(self, "_dep", mp.delta)) * self.K)
         Ld = L_need(y_plan)
         Ld_pre = Ld.sum()
         Ld_req = Ld.copy()                                    # production labor the firm asks for
@@ -1138,6 +1215,7 @@ class Macro:
             Ld = np.maximum(Ld - self._adopt_L, 0.0)          # time spent installing a new technique
             Ld = np.minimum(Ld, L_need(y_plan))               # production follows the plan; surplus workers idle
         y = self.prod(Ld)
+        self._yprod = y
         if getattr(self, "trace_on", False) and mp.vacancies:
             f = 0
             self.trace.append(dict(t=self.t, inv0=float(self.inv[f]), mu=float(mu_s[f]), S=float(S[f]), y_plan=float(y_plan[f]),
@@ -1214,7 +1292,13 @@ class Macro:
         I_real = S_I * fill / P_paid
         self.m += revenue - S_I * fill
         S_I_f = P * I_plan
-        self.K = (1 - mp.delta) * self.K + I_real
+        if getattr(self, "_ell", None) is not None:          # depreciation rises with utilization
+            u_f = np.clip(self._kx * self._yprod / np.maximum(self.K, 1e-12), 0.0, mp.u_max)
+            self._dep = (mp.delta - 0.8 * mp.delta1) + mp.delta1 * u_f
+            self._util = u_f
+        else:
+            self._dep = np.full(F, mp.delta)
+        self.K = (1 - self._dep) * self.K + I_real
         self.inv = (avail - sold) * (1 - mp.inv_decay) + (y if mp.prod_lag else 0.0)
         if getattr(self, "trace_on", False) and mp.vacancies:
             self.trace[-1].update(sold=float(sold[0]), dem=float(q_dem[0]), avail=float(avail[0]))
@@ -1268,8 +1352,8 @@ class Macro:
         self.loan -= loss
         # owners are paid the quarter's accounting profit (book depreciation at historical cost); remaining cash
         # repays loans, since holding deposits at rb while owing at rL loses money
-        profit = revenue - wb_f - int_f + m_int - mp.delta * self.Kb
-        self.Kb = (1 - mp.delta) * self.Kb + S_I_f * fill
+        profit = revenue - wb_f - int_f + m_int - self._dep * self.Kb
+        self.Kb = (1 - self._dep) * self.Kb + S_I_f * fill
         div_f = np.clip(profit, 0.0, np.maximum(self.m, 0.0))
         self.m -= div_f
         self.Ehat = (1 - mp.g_earn) * self.Ehat + mp.g_earn * profit
@@ -1435,6 +1519,7 @@ class Macro:
                     markup=float(np.mean(self.p)) / uc_rec,
                     inv_sales=self.inv.sum() / max(sold.sum(), 1e-12), sig=float(np.sqrt(self.sig2).mean()),
                     V=V.sum(), Fc=self.Fc, mult=getattr(self, 'mult', 0.0),
+                    util=float(np.average(getattr(self, '_util', np.full(F, 0.8)), weights=self.K)),
                     nocut_bind=float(np.mean(self._cut_wanted[((np.arange(F) + self.t) % mp.review_q == 0)])) if hasattr(self, '_cut_wanted') else 0.0, adopt=self.adopt_last, gY=self.gY, n_ideas=self.n_ideas, pool=len(self.poolK) if mp.tech else 0,
                     AK=float(np.exp(np.mean(np.log(self.AK)))) if mp.tech else 1.0, AL=float(np.exp(np.mean(np.log(self.AL)))) if mp.tech else 1.0,
                     Lprod=float(Ld.sum()), Kuse=float(self.K.sum()), book=float((P * self.K + v * self.inv + self.m - self.loan).sum()))
