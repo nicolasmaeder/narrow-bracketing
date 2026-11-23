@@ -67,3 +67,9 @@ Fix (default): Weiss (1980) adverse selection in hiring and quits, the user's JM
 
 Caveat (the user's JMP, Fire_Sale.tex, appendix A.4, following Weiss 1980): a true Weiss wage floor exists only if output per dollar, E[q | q <= q*] / q*, has an interior maximum. Under the lognormal skill distribution (the default, s.d. 0.5) this ratio falls monotonically in q* at every dispersion, so there is no floor. Under lognormal, quality enters pay setting as a reason pay is worth something to a shrinking firm, not as a floor. With a mass at low skill (rectified normal, z_min 0.05) the ratio peaks at about half of workers, so a floor exists. On 4 seeds that version gives a smaller recession and more deflation; it is not yet calibrated (the floor binds in normal times).
 
+### Minimum wage (option `min_wage`, off)
+
+Policy rule: earnings per worker at least W_min, revised every 4 quarters to kaitz x published median earnings of the employed (kaitz 0.45; across 30 states the Kaitz index runs from 0.37 to 0.59, the federal minimum alone is 0.28, Dube 2025). Pooled firms pay at least W_min per head. Output-paying firms lay off and do not hire workers whose output (z w) is worth less than W_min, so those workers can only go to pooled firms (quality beliefs account for this).
+
+Finding: it does not bind at pooled firms (0% of employed within 5% of the minimum), and it removes the output-paying option for 13% of workers (30% at kaitz 0.6). Unemployment is unchanged within noise. The reason is structural: 74% of workers are at pooled firms, which all pay about the same per head, so the pooled wage is the median. Earnings p10/p50 is 0.99 (data, hourly: about 0.5) and p90/p50 is 1.45 (data: about 2). The model has no low-wage jobs for a minimum to bind on.
+

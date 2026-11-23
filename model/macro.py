@@ -160,6 +160,12 @@ class MParams:
         # output-based pay, so a pooled firm's average quality rises with its wage and it will not cut pay below the
         # level where quality falls faster than the wage; it lays off (at random) instead
         self.weiss = True 
+        # minimum wage (policy rule): earnings per worker may not fall below W_min; revised every mw_review quarters to
+        # kaitz times the published median earnings of employed workers (indexed state minimums; Kaitz index 0.37-0.59
+        # across states, 0.28 for the federal minimum alone)
+        self.min_wage = False
+        self.kaitz = 0.45
+        self.mw_review = 4
         self.n_piece = 5            # firms paying by measured output
         self.piece_own_market = True   # output-paying firms compare their pay with other output-paying firms
         self.commission = 0.0       # > 0: output-paying firms pay this share of the value of output per unit of effective labor
@@ -239,6 +245,8 @@ class Macro:
         self.s_lr = np.full(F, y0)               # firm's normal sales (discounted average of its own)
         self.piece = (np.arange(F) < mp.n_piece) if mp.weiss else np.zeros(F, bool)
         self.zbar = float(self.z[self.age < self.hp.J_W].mean())      # published average skill of the labor force
+        self.W_min = 0.0                                            # minimum earnings per worker (0: none yet)
+        self.med_earn = None                                         # published median earnings of the employed
         self.qbar = np.full(F, self.zbar)                              # each firm's average worker quality (observed)
         self._rev_pe = np.full(F, P0 * y0 / L0)
         zw = np.sort(self.z[self.age < self.hp.J_W]); self._zpub = zw[:: max(1, len(zw) // 400)]   # published skill distribution
@@ -836,6 +844,8 @@ class Macro:
         lw_pool = mp.eta_L * np.log(np.maximum(x * We_pool * self.zbar, 1e-12))[..., None]
         lw_piece = mp.eta_L * np.log(np.maximum(We_piece * zs, 1e-12))
         pi = 1.0 / (1.0 + sp / (1 - sp) * np.exp(np.clip(lw_piece - lw_pool, -50, 50)))
+        if mp.min_wage and self.W_min > 0:
+            pi = np.where(We_piece * zs < self.W_min, 1.0, pi)       # output below the minimum: only pooled firms hire
         return (pi * zs).sum(-1) / np.maximum(pi.sum(-1), 1e-12)
 
     def Wbar_obs(self, sel=None):
@@ -860,6 +870,9 @@ class Macro:
         job[~work] = -1
         L_prev = np.bincount(job[job >= 0], z[job >= 0], F)
         job[(job >= 0) & (u_sep < hp.sep)] = -1                       # exogenous separations
+        if mp.weiss and mp.min_wage and self.W_min > 0:
+            jf_ = np.maximum(job, 0)
+            job[(job >= 0) & self.piece[jf_] & (w[jf_] * z < self.W_min)] = -1   # output worth less than the minimum
         # layoffs where the workforce exceeds the plan
         def keep_upto(sel, cap, key):
             idx = np.nonzero(sel)[0]
@@ -900,6 +913,8 @@ class Macro:
                 # pooled firms
                 fac = np.where(self.piece[None, :], z[idx, None], self.zbar)
                 wti = (V_left > 1e-9)[None, :] * (vac if L_target is not None else 1.0)[None, :] * (w[None, :] * fac / We_ref) ** mp.eta_L
+                if mp.min_wage and self.W_min > 0:
+                    wti = wti * ~(self.piece[None, :] & (w[None, :] * fac < self.W_min))   # not hired below the minimum
                 cdfi = np.cumsum(wti, 1); tot = cdfi[:, -1]
                 good = tot > 0
                 ch = np.where(good, (cdfi < (u_c[idx] * tot)[:, None]).sum(1), 0)
@@ -1066,6 +1081,10 @@ class Macro:
             if mp.review_q > 1:                                 # wages are reviewed once every review_q quarters (staggered)
                 rev = ((np.arange(F) + self.t) % mp.review_q == 0) | (self.piece & (mp.commission > 0))
                 w_post = np.where(rev, w_post, self.w)
+            if mp.min_wage and self.W_min > 0:
+                # pooled firms pay per head: pay per head at least the minimum; output-paying firms pay z w, and do
+                # not employ workers whose output is worth less than the minimum (see labor_market)
+                w_post = np.where(self.piece, w_post, np.maximum(w_post, self.W_min / self.zbar))
             # cost per unit of effective labor: pooled firms pay per head, so divide by the average quality they have
             qfac = np.where(self.piece, 1.0, self.zbar / np.maximum(self.qbar, 1e-6)) if mp.weiss else np.ones(F)
             w_eff = w_post * qfac
@@ -1286,6 +1305,10 @@ class Macro:
                           * (self.earn_fac(self.job) if mp.weiss else self.z), 0.0)
         benefit = np.where(work & ~emp, hp.ui * W * self.z, 0.0)
         pension = np.where(~work, self.pens * W, 0.0)
+        if emp.any():
+            self.med_earn = float(np.median((self.w[self.job[emp]] if mp.wage_posting else W) * (self.earn_fac(self.job[emp], self.z[emp]) if mp.weiss else self.z[emp])))
+        if mp.min_wage and self.med_earn is not None and self.t % mp.mw_review == 0:
+            self.W_min = mp.kaitz * self.med_earn                      # annual revision to a share of the published median
         tax_rev = tau * wb_f.sum()
         extra = np.zeros(N) if extra_y is None else extra_y
         y_h = wage_h + benefit + pension + self.div_pending + extra
