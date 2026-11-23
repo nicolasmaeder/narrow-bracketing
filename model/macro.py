@@ -155,6 +155,10 @@ class MParams:
         # level where quality falls faster than the wage; it lays off (at random) instead
         self.weiss = False
         self.n_piece = 5            # firms paying by measured output
+        self.piece_own_market = True   # output-paying firms compare their pay with other output-paying firms
+        self.commission = 0.0       # > 0: output-paying firms pay this share of the value of output per unit of effective labor
+                                    # (commission contract, like the JMP's capital sector paying the value of output); quarterly
+        self.vshock_rho = 0.95      # persistence of an asset-value shock
         self.exo_ramp = 0           # diagnostic: quarters over which exogenous growth ramps up
         self.exo_g = 0.0            # diagnostic: exogenous labor-augmenting growth per quarter instead of ideas
         self.burn_hh = 600          # household-only burn-in for the initial distribution
@@ -206,7 +210,9 @@ class Macro:
         self.piece = (np.arange(F) < mp.n_piece) if mp.weiss else np.zeros(F, bool)
         self.zbar = float(self.z[self.age < self.hp.J_W].mean())      # published average skill of the labor force
         self.qbar = np.full(F, self.zbar)                              # each firm's average worker quality (observed)
+        self._rev_pe = np.full(F, P0 * y0 / L0)
         zw = np.sort(self.z[self.age < self.hp.J_W]); self._zpub = zw[:: max(1, len(zw) // 400)]   # published skill distribution
+        self.vshock = 1.0                        # asset-value shock multiplier (experiments)
         self.r_lr_f = np.full(F, mp.i_star + 0.005)   # firm's long-run cost of funds (discounted average of its own)
         self.turn = np.full(F, 0.05)             # belief: rate at which the firm's technique is superseded (own record)
         self.gY = mp.g_N / mp.pL if mp.tech else 0.0   # published real growth of final sales (discounted average)
@@ -899,12 +905,21 @@ class Macro:
                 We_piece = None
                 if mp.weiss:                                  # pooled firms also look at published pay at output-paying firms
                     We_piece = self.Wbar_obs(self.piece) * (1 + g_mkt) ** 2.5
+                    if mp.piece_own_market:                   # output-paying firms benchmark against each other only
+                        We = np.where(self.piece, self.Wbar_obs(self.piece), self.Wbar_obs()) * (1 + g_mkt)
                 w_post = np.maximum(self.w, self.pay_review(We * (1 + g_mkt) ** 1.5, qf, Q, r_own, We_piece))   # no nominal cuts
+                if mp.weiss and mp.commission > 0:
+                    # output-paying firms: commission on last quarter's revenue per unit of effective labor; it moves
+                    # with sales, down as well as up (flexible pay)
+                    w_com = mp.commission * self._rev_pe * (1 + g_mkt)
+                    w_post = np.where(self.piece, w_com, w_post)
+                    We_piece = float(np.mean(w_com[self.piece])) * (1 + g_mkt) ** 1.5
+                    w_post = np.where(self.piece, w_post, np.maximum(self.w, self.pay_review(We * (1 + g_mkt) ** 1.5, qf, Q, r_own, We_piece)))
             else:
                 p0, S0, mu0, v0 = self.price_and_stock(w0, r_own)
                 w_post, L_cap = self.wage_choice(We, p0, mu0, v0, L_prev, B, Q, self.w / We)
             if mp.review_q > 1:                                 # wages are reviewed once every review_q quarters (staggered)
-                rev = (np.arange(F) + self.t) % mp.review_q == 0
+                rev = ((np.arange(F) + self.t) % mp.review_q == 0) | (self.piece & (mp.commission > 0))
                 w_post = np.where(rev, w_post, self.w)
             # cost per unit of effective labor: pooled firms pay per head, so divide by the average quality they have
             qfac = np.where(self.piece, 1.0, self.zbar / np.maximum(self.qbar, 1e-6)) if mp.weiss else np.ones(F)
@@ -1156,6 +1171,10 @@ class Macro:
         if getattr(self, "trace_on", False) and mp.vacancies:
             self.trace[-1].update(sold=float(sold[0]), dem=float(q_dem[0]), avail=float(avail[0]))
         self._qd, self._sold, self._avail = q_dem.copy(), sold.copy(), avail.copy()
+        # value of output per unit of effective labor (this quarter's production at the posted price), smoothed
+        ok_ = Ld > 1e-6 * max(Ld.max(), 1e-9)
+        vpe = np.where(ok_, self.p * self.prod(Ld) / np.maximum(Ld, 1e-9), self._rev_pe)
+        self._rev_pe = 0.5 * self._rev_pe + 0.5 * vpe
         if mp.rho_c < 1:
             # customers who found the firm sold out leave with probability stockout_loss and re-shop next quarter
             unserved = np.maximum(q_dem - np.minimum(q_dem, avail), 0.0) / np.maximum(q_dem, 1e-12)
@@ -1223,6 +1242,8 @@ class Macro:
         else:
             r_f = mp.r_assumed if mp.r_assumed else self.rb_lr + mp.erp
             V = np.maximum(self.Ehat, 0.0) / r_f
+        V = V * self.vshock                                   # experiments: asset-value bust (decays back)
+        self.vshock = 1.0 + mp.vshock_rho * (self.vshock - 1.0)
         if mp.fund:
             # fund collects dividends, keeps cash for withdrawals, invests the rest in its firms (or raises cash
             # from them): holding deposits at rb while its firms borrow at rL loses money
