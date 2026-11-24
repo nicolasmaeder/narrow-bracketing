@@ -5,7 +5,8 @@ Code for a macro model that is computed one quarter at a time. Every agent decid
 ## Layout
 
 - `model/household.py`: household block. One-quarter objective over consumption, a liquid buffer and a retirement balance with targets from published advice; retirement contributions set by a calculator at a fixed planning return (re-planned only outside a band); retirees draw down balance ÷ quarters left.
-- `model/macro.py`: the economy.
+- `model/macro.py`: parameters, state and the quarter (`Macro.step`). Agents' decisions are in modules: `household.py` (households), `firms.py` and `technology.py` (firms), `banks.py` (banks), `labor.py` (labor market), `government.py` (Fed and Treasury).
+- `model/regress.py`: regression suite (fixed economy plus three scenarios against a stored baseline; a refactor must reproduce it exactly). `python3 regress.py save` after an intended model change.
   - Firms: pricing-newsvendor problem for price and stock; capital from expected cost plus user cost plus adjustment cost; demand level and noise learned by discounted least squares.
   - Buyers: logit choice across firms.
   - Bank: lending creates deposits.

@@ -263,3 +263,9 @@ The bank prices each firm's loan for its expected loss: PD = pd0 (cov_ref / cove
   - Average income-tax rate on taxable income 19% / 15%.
   - u 5.6 / 6.3; inflation 2.0 / 2.1; policy rate 3.1 / 3.6; debt/GDP 0.98 with sd 0.23 / 0.26.
   - The scale swings more than legislated rates do. A slower or bounded adjustment is an option.
+
+### Code organization and regression suite (Nov 23; user: this is meant to be an actual model of the economy)
+
+- `regress.py` runs seed 1 for 300 quarters, then three scenarios from that state: asset bust plus credit cut, a deficit surge, and a policy-rate shock (16 quarters each). It records 27 series each quarter. A refactor must reproduce the stored baseline exactly. After an intended model change, it shows which series moved, and the baseline is re-saved.
+- `macro.py` (2,300 lines) was split by agent: `technology.py`, `firms.py`, `banks.py` (posted rates; end-of-quarter switching and positions), `labor.py`, `government.py` (policy rate, budget rule, public-sector interest, Treasury issuance and the Fed's balance sheet, balance-sheet check). `macro.py` keeps the parameters, the state and the quarter's order (about 860 lines). Regression: identical in all four runs.
+- Next for the split: the goods market, firm settlement and the retirement fund, which share many local variables with the rest of the quarter.
