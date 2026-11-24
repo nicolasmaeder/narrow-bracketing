@@ -95,7 +95,8 @@ class MParams:
         self.div_to_fund = False    # diagnostics: firm and bank profits credited to retirement balances
         # retirement fund (owns firms and bank)
         self.fund = True
-        self.erp = 0.0075           # fund's published equity premium per quarter (3% a year)
+        self.erp = 0.01             # fund's published equity premium over the deposit rate, per quarter (4% a year:
+                                    # about 3% over long Treasuries; implied ERP estimates 3-5%, Damodaran)
         self.g_lr = 0.02            # fund's forgetting rate on observed deposit rates (long-run rate belief)
         self.g_earn = 0.025         # forgetting rate on firms' earnings: about ten years, as in normalized-earnings valuation (Graham-Dodd; Shiller CAPE)
         self.fund_cash_q = 0.5      # cash kept for withdrawals, in quarters of withdrawals
@@ -180,6 +181,8 @@ class MParams:
         # remittances resume only once later income has paid it down; True = the Treasury covers them (the Bank of
         # England's indemnity of its asset purchase facility)
         self.fed_indemnity = False
+        self.g_tpn = 0.02           # gain on the observed term premium in investors' normal premium (half-life about 9 years)
+        self.tp_pass = True         # the term premium's deviation from normal moves other long-term required returns
         self.fed_tp_rule = True     # False: the Fed keeps its long holdings fixed and the market sets the premium
         self.bank_long = 0.1        # banks' share of private long holdings
         self.bank_bills = 0.05      # banks' liquidity holdings of Treasuries, share of their deposits
@@ -379,6 +382,7 @@ class Macro:
         self.q_L = 1.0 / (1 + mp.i_star + mp.tp0 - mp.delta_c)   # long bond price
         self.y_L = mp.i_star + mp.tp0
         self.TP = self.TP_star = mp.tp0
+        self.tp_norm = mp.tp0                         # investors' normal term premium (learned)
         self.E_F = 0.0                                # Fed's equity (market value); deferred asset when negative
         self.def_F = 0.0                              # Fed's deferred asset (losses carried forward, not remitted)
         self.qb_F = self.q_L                          # Fed's book price of its long bonds (amortized cost)
@@ -1203,7 +1207,9 @@ class Macro:
 
     def _tp_dev(self):
         # the term premium on long Treasuries moves required returns on other long assets (portfolio balance)
-        return self.TP - self.mp.tp0 if self.mp.long_bonds else 0.0
+        # relative to the premium investors have come to see as normal (a discounted average of observed premia), so
+        # a premium that stays low for years stops lowering required returns
+        return self.TP - self.tp_norm if (self.mp.long_bonds and self.mp.tp_pass) else 0.0
 
     # ------------------------------------------------------------------ accounting
     def reserves(self):
@@ -1490,7 +1496,7 @@ class Macro:
         # of its own) plus a hurdle premium. Firms' discount rates are high and move little with interest rates
         # (Gormsen and Huber 2023; Sharpe and Suarez 2021)
         # long-term finance: the term premium on long Treasuries passes into the cost of long-lived funds
-        self.r_lr_f = (1 - mp.g_lr) * self.r_lr_f + mp.g_lr * (r_own + (self.TP - mp.tp0 if mp.long_bonds else 0.0))
+        self.r_lr_f = (1 - mp.g_lr) * self.r_lr_f + mp.g_lr * (r_own + self._tp_dev())
         # capacity is planned for normal sales: a discounted average of the firm's own sales, grown at published trend
         # growth over the coming year (a one-quarter surge in orders does not justify new capacity: no accelerator loop)
         s_cap = self.s_lr * np.exp(4 * self.gY) if mp.invest_lr else mu_s
@@ -2132,7 +2138,7 @@ class Macro:
             XF = XL - Xp
             self.g = g_new                                     # issuance at the market price leaves net worth unchanged
             self.q_L, self.TP, self.y_L = q, TP, yhat + TP
-            # Fed: market value and book value of its holdings (realized gains on sales are booked next quarter)
+            self.tp_norm += mp.g_tpn * (TP - self.tp_norm)            # Fed: market value and book value of its holdings (realized gains on sales are booked next quarter)
             self.E_F += q * d_ * XF0 - q0 * XF0
             bv = self.qb_F * d_ * XF0
             dX = XF - d_ * XF0

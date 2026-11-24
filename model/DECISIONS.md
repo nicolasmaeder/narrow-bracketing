@@ -217,3 +217,19 @@ The bank prices each firm's loan for its expected loss: PD = pd0 (cov_ref / cove
   - The Fed never remits after burn-in, and the deferred asset grows to 1.2-7 times GDP.
   - The term premium is below the Fed's target in 85-90% of quarters, and Fed long holdings average 0.18-0.19 of GDP. This is not QE. It is a ratchet: the Fed buys whenever debt growth pushes the premium above target, and it cannot sell when debt/GDP falls back (it wanders 0.3-1.2). So the premium averages about 0 and the Fed earns almost no carry.
   - Once its equity is below minus the TGA, the IOR on the reserves with nothing behind them is a loss each quarter, so the deferred asset compounds at the IOR. The model's average policy rate (about 6%) exceeds nominal growth (about 4%), so it explodes relative to GDP. In the US, r < g most of the time, and currency gives the Fed income.
+
+### The model's real rate (Nov 23; user: good, look at what sets it)
+
+- **Term-premium pass-through relative to a learned normal.** Required returns moved with the premium's deviation from the fixed 1% normal. With the premium averaging about 0, that was a permanent stimulus: it raised the policy rate by 1.2-1.5 points (6.2-6.7%) and its sd to 4 points. Investors now measure the deviation from the premium they have come to see as normal (a discounted average of observed premia, gain 0.02 a quarter, half-life about 9 years). Policy rate back to 5.1-5.4% (2 seeds).
+- **What lowers it** (1 seed each):
+
+  | Change | Policy rate | Inflation | Debt/GDP |
+  |---|---|---|---|
+  | Debt target 0.6 | 4.9% | | 0.37 |
+  | Purchases 15% of GDP | 5.0% | | |
+  | Fund's equity premium 4% a year | 3.7-3.8% | 1.6-2.0% | |
+  | Fund's equity premium 5% a year | 3.1% | 2.2% | |
+
+  The household retirement-target change tested had no effect. Saving is set by targets, so the equity premium (through valuations, retirement wealth and the cost of funds) is what moves the neutral rate.
+- **New default: equity premium 4% a year over the deposit rate** (was 3%), about 3% over long Treasuries. Implied ERP estimates are 3-5%, and the old value was at the bottom of them. Real policy rate about 2% (before: about 3.3-3.8%), below nominal growth (about 4%).
+- **Fed** (quarters 300-700). The deferred asset goes 0.07 -> 0.25 of GDP (seed 1) and 0.13 -> 0.29 (seed 2) instead of exploding. Remittances average 0.2-0.3% of GDP a year. The rate is at zero 15-17% of quarters (US 1990-2024: about a quarter). Fed long holdings average 0.40-0.43 of GDP. Debt/GDP is about 1.1-1.2 with sd about 0.6 (seed 1, still too volatile).
