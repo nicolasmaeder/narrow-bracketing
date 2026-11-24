@@ -24,12 +24,46 @@ def save(T=500):
         pickle.dump(state, f)
     print('saved state after', T, 'quarters:', len(state), 'variables')
 
+# firm-level state that scales with the firm's size (split k ways when the stored run had k times fewer firms),
+# and log beliefs about the firm's demand position (shifted by -log k); everything else per firm is a price, rate,
+# ratio, belief about a rate, or productivity, and is copied to each of the k clones
+EXT = {'K', 'inv', 'loan', 'Kb', 'm', 'Ehat', 'Eq', 's_lr', 'cust', 'share_prev', 'share_prev_used', 'hired_last',
+       'L_plan_raw', '_cap', '_Spre', '_inv_lag', '_yprod', '_sold', '_avail', '_qd', '_mu_lag', '_adopt_L'}
+LOGEXT = {'lnA', 'ln_a'}
+
+def split_firms(state, F_old, k, rng):
+    """Each stored firm becomes k identical firms of 1/k its size; workers are spread evenly over the clones."""
+    out = {}
+    for key, v in state.items():
+        if isinstance(v, np.ndarray) and v.ndim >= 1 and v.shape[0] == F_old and key not in ('job',):
+            v = np.tile(v, (k,) + (1,) * (v.ndim - 1))
+            if key in EXT:
+                v = v / k
+            elif key in LOGEXT:
+                v = v - np.log(k)
+        elif isinstance(v, np.ndarray) and v.ndim == 2 and v.shape[1] == F_old:
+            v = np.tile(v, (1, k))
+        out[key] = v
+    if 'n_sec' in out:
+        out['n_sec'] = state['n_sec'] * k
+    job = state['job'].copy()
+    has = job >= 0
+    job[has] = job[has] + F_old * rng.integers(0, k, has.sum())
+    out['job'] = job
+    return out
+
 def transplant(m):
-    """Copy the stored state into a freshly built model m. Returns the number of variables copied (0: no file)."""
+    """Copy the stored state into a freshly built model m. Returns the number of variables copied (0: no file).
+    If m has k times as many firms as the stored run, each stored firm is split into k clones first."""
     if not os.path.exists(FN):
         return 0
     with gzip.open(FN, 'rb') as f:
         state = pickle.load(f)
+    F_old, F = len(state['p']), m.mp.F
+    if F != F_old:
+        if F % F_old:
+            return 0
+        state = split_firms(state, F_old, F // F_old, np.random.default_rng(m.mp.seed + 7))
     n = 0
     for k, v in state.items():
         if k not in m.__dict__:                  # created during the run (lazily initialized state)

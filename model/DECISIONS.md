@@ -293,3 +293,24 @@ The bank prices each firm's loan for its expected loss: PD = pd0 (cov_ref / cove
   - Lockdown: a new experiment variable `lock` closes a share of service capacity, so closed capacity sells nothing and employs no one (temporary layoffs). Unmet service spending stays in households' accounts (forced saving). 30% of service capacity is closed for two quarters and 15% in the third, with transfers of 8% of quarterly GDP for three quarters (checks and enhanced UI, about 6% of annual GDP).
   - Results: output -9% in quarter 2 (2020Q2: about -10%). Unemployment +3.9 points (2020: about +10, mostly temporary layoffs; the closure is probably too small). Then overheating: unemployment 2.6 below normal, the price level +7% and a rate hike of 3.4 points (2021-23: inflation and hikes of 5 points), followed by a downturn about three years later.
   - Fed purchases are modest (+6% of GDP; 2020: about 15%), because the transfers were spent and the supply did not push the premium far.
+
+### Volatility comes from having only 20 firms (Nov 23)
+
+- **Symptom** (20 firms, quarters 100-400). Quarterly inflation, annualized, has sd 6.2 (US core CPI about 1, headline about 2). The policy rate has sd 3.2, and the rate is at zero 16% of quarters. Unemployment has sd 2.2; annualized output growth has sd 7.7 (US about 2.5-3).
+- **Not a measurement artifact.** A chained Tornqvist index over sellers' prices (revenue weights averaged over two quarters, continuing sellers only; now recorded as `pi_T`) is as volatile (sd 6.8) as the unit value spent / units sold (correlation 0.97).
+- **Idiosyncratic noise.** Firms change prices in about half of quarters, by 6.5% on average (US micro data: about 10%, Nakamura-Steinsson). With 20 sellers (effective number 1/Herfindahl about 18), these changes do not average out. The revenue-weighted firm-specific part of the index has sd 5.8 annualized and correlation 0.71 with the index. The Fed reacts to that noise, so the policy rate, demand and unemployment inherit it.
+- **More firms.** `warm.py` can now split each stored firm into k identical firms of 1/k its size (size-type state divided by k, log demand beliefs shifted by -log k, workers spread evenly over the clones), so any multiple of 20 firms starts warm. Results (quarters 100-400):
+
+  | Firms | Inflation sd | Policy rate | Rate sd | Unemployment | u sd | Output growth sd | Rate at zero | Fed long holdings | Term premium | Time per quarter |
+  |---|---|---|---|---|---|---|---|---|---|---|
+  | 20 | 6.2 | | 3.2 | 5.6 | 2.2 | 7.7 | 16% | 0.30-0.33 | | |
+  | 80 | 3.7 | | 1.8 | 3.7 | 0.45 | 4.2 | 0% | | | |
+  | 100 | | 4.4 | 1.7 | 3.8 | 0.5 | | 0% | 0.16 | 0.84 | 0.2 s |
+  | 200 | 2.7 | 4.5 | 1.5 | 3.7 | 0.4 | 4.7 | 0% | 0.10 | 0.97 | 0.38 s |
+
+  Markup about 1.65, wage share 0.44, debt sd 0.06.
+- **Implications.**
+  1. Most of the model's business cycle was granular noise from too few sellers. Several problems traced to it: frequent zero-bound episodes, the Fed's long-bond ratchet, the deferred asset, and the term premium averaging zero. With 100-200 firms the Fed holds about 0.10-0.16 of GDP and the premium sits near normal.
+  2. With many firms the economy is too calm: unemployment sd 0.4-0.5 against about 1.6 in the US. It lacks the aggregate disturbances that drive real cycles: shifts in credit supply, asset prices, fiscal and monetary policy, energy prices, sectoral and technology shocks. A realistic firm-size distribution (Zipf; granular shocks from the largest firms, Gabaix 2011) would restore part of the volatility honestly.
+  3. Inflation still has white noise (autocorrelation about 0) at 200 firms; the US CPI aggregates thousands of items.
+  4. The default is still 20 firms; switching changes the calibration everywhere.

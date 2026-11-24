@@ -1082,6 +1082,17 @@ class Macro(Technology, Firms, Banks, Labor, Government):
             fill_g = fill_h = fill
             c_real = S_h * fill / Pp_s[0]
         P_paid = spent / max(sold.sum(), 1e-12)
+        # chained price index (Tornqvist over sellers' prices, revenue weights averaged over the two quarters,
+        # continuing sellers only, as statistical agencies do; the unit value spent / units sold mixes goods and
+        # services and moves with the composition of sales)
+        w_rev = revenue / max(revenue.sum(), 1e-12)
+        if getattr(self, '_p_q', None) is not None:
+            cont = ~getattr(self, '_entered', np.zeros(F, bool))
+            wb_ = 0.5 * (w_rev + self._w_q) * cont
+            self._pi_T = float(np.exp((wb_ * np.log(self.p / self._p_q)).sum() / max(wb_.sum(), 1e-12)) - 1)
+        else:
+            self._pi_T = 0.0
+        self._p_q, self._w_q = self.p.copy(), w_rev
         I_real = S_I * fill_g / Pp_s[0]
         G_paid = S_Gg * fill_s[0] + (S_Gs * fill_s[1] if (mp.services and mp.weiss) else 0.0)
         self._G_real = float(S_Gg * fill_s[0] / Pp_s[0] + ((S_Gs * fill_s[1] / Pp_s[1]) if (mp.services and mp.weiss) else 0.0))
@@ -1163,8 +1174,10 @@ class Macro(Technology, Firms, Banks, Labor, Government):
         loss = np.where(nw < 0, -nw, 0.0)
         self.loan -= loss
         self._n_exit = 0
+        self._entered = np.zeros(F, bool)
         if mp.firm_eff and mp.tech:
             ex = self.dq >= mp.exit_q
+            self._entered = ex.copy()
             if ex.any():
                 self._n_exit = int(ex.sum())
                 a_new = mp.sd_a * self.rng.standard_normal(F)
@@ -1389,7 +1402,7 @@ class Macro(Technology, Firms, Banks, Labor, Government):
         self.t += 1
         if not record:
             return None
-        return dict(t=self.t, i=i, rb=rb, ra=ra, rL=rL, tau=tau, avg_tax_y=getattr(self, '_avg_rate_y', 0.0), P=P_paid, pi=pi, W=W, u=u,
+        return dict(t=self.t, i=i, rb=rb, ra=ra, rL=rL, tau=tau, pi_T=self._pi_T, avg_tax_y=getattr(self, '_avg_rate_y', 0.0), P=P_paid, pi=pi, W=W, u=u,
                     Y=sold.sum(), C=c_real.sum(), I=I_real.sum(), GDP=GDP, fill=fill, inv=self.inv.sum(),
                     K=self.K.sum(), loans=self.loan.sum(), debt=-self.g, E_B=self.E_B, B=self.b.sum(),
                     A=self.a.sum(), M_f=self.m.sum(), defaults=int((loss > 0).sum()), loss_rate=loss_rate,
