@@ -74,7 +74,17 @@ class MParams:
         self.cap_B = 0.08           # bank capital target, share of loans
         # government
         self.d_target = 1.0         # government debt target, share of annual GDP
-        self.phi_G = 0.02           # tax response to debt gap
+        self.phi_G = 0.02           # tax response to debt gap (single payroll tax, tax_split off)
+        # tax system (tax_split): a payroll tax at its statutory rate (Social Security + Medicare, 15.3%), a corporate
+        # tax on positive profits (21%), and an income tax on wages, benefits, pensions and dividends above a standard
+        # deduction, whose rate the budget rule sets. The rule: revenue covers structural spending less the deficit that
+        # keeps debt at target as GDP grows, plus a primary-surplus response to the debt gap (Bohn 1998: about 0.04 of
+        # GDP a year per unit of debt/GDP). The structural part moves slowly (legislated rates change rarely)
+        self.tax_split = True
+        self.tau_p = 0.153
+        self.tau_c = 0.21
+        self.ded_y = 0.25           # standard deduction, share of published median earnings
+        self.bohn = 0.04
         self.g_tax = 0.05           # gain on the observed budget share used to set the tax rate
         # central bank
         self.i_star = 0.0125        # neutral policy rate per quarter (5% a year)
@@ -503,6 +513,8 @@ class Macro:
         self.budget_prev = None                 # last quarter's (spending net of estates, wage bill)
         self.tau = 0.25
         self.tau_s = None                       # smoothed budget share
+        self._base_y_lr = 0.0                   # discounted average of the income-tax base (the rule's forecast)
+        self._rev_c_lr = 0.0                    # discounted average of corporate tax revenue
         self.i_prev = mp.i_star
         self.pi_hist = [mp.pi_star] * 4
         self.i_star_est = mp.i_star
@@ -1266,7 +1278,19 @@ class Macro:
             rL = (1 + i + mp.m_L) / (1 - self.loss_e) - 1
         GDP_a = sum(self.GDP_hist[-4:])                       # last four quarters, nominal
         debt = -self.g
-        if self.budget_prev is not None:
+        if self.budget_prev is not None and mp.tax_split:
+            spend_net, wb_prev = self.budget_prev
+            need = spend_net - (mp.d_target * GDP_a * (self.gY + mp.pi_star) if mp.deficit_rule else 0.0)
+            # primary-surplus response to debt, suspended while unemployment is well above normal (escape clauses:
+            # consolidation waits for the recovery)
+            gate = float(np.clip(1 - (self.u_prev - mp.u_star) / 0.03, 0.0, 1.0))
+            need += gate * mp.bohn / 4 * (debt - mp.d_target * GDP_a)
+            # the base at normal unemployment (cyclically adjusted, so a slump does not raise the rate)
+            base_y = max(self._base_y_lr * GDP_a / 4 * (1 - mp.u_star) / max(1 - self.u_prev, 0.3), 1e-12)
+            sh = (need - mp.tau_p * wb_prev - self._rev_c_lr * GDP_a / 4) / base_y          # structural income-tax rate
+            self.tau_s = sh if self.tau_s is None else (1 - mp.g_tax) * self.tau_s + mp.g_tax * sh
+            self.tau = float(np.clip(self.tau_s, mp.tau_min, 0.7))
+        elif self.budget_prev is not None:
             spend_net, wb_prev = self.budget_prev
             # the rule allows the deficit that keeps debt at its target share of GDP as the economy grows
             # (published trend real growth plus the inflation target, not realized nominal growth, which would feed inflation)
@@ -1602,7 +1626,8 @@ class Macro:
         self.m += new_loan - wb_f
 
         # 5. households
-        wage_h = np.where(emp, (1 - tau) * (self.w[np.maximum(self.job, 0)] if mp.wage_posting else W)
+        tau_w = mp.tau_p if mp.tax_split else tau              # tax withheld from wages
+        wage_h = np.where(emp, (1 - tau_w) * (self.w[np.maximum(self.job, 0)] if mp.wage_posting else W)
                           * (self.earn_fac(self.job) if mp.weiss else self.z), 0.0)
         if mp.scar:
             ne_ = work & (self.job < 0)
@@ -1624,9 +1649,18 @@ class Macro:
             self.med_earn = float(np.median((self.w[self.job[emp]] if mp.wage_posting else W) * (self.earn_fac(self.job[emp], self.z[emp]) if mp.weiss else self.z[emp])))
         if mp.min_wage and self.med_earn is not None and self.t % mp.mw_review == 0:
             self.W_min = mp.kaitz * self.med_earn                      # annual revision to a share of the published median
-        tax_rev = tau * wb_f.sum()
+        tax_rev = tau_w * wb_f.sum()
         extra = np.zeros(N) if extra_y is None else extra_y
         y_h = wage_h + benefit + pension + self.div_pending + extra
+        if mp.tax_split:
+            # income tax (flat rate above a standard deduction: progressive on average)
+            ded = mp.ded_y * (self.med_earn if self.med_earn is not None else W)
+            base_h = np.maximum(wage_h + benefit + pension + self.div_pending - ded, 0.0)
+            tax_y = tau * base_h
+            y_h = y_h - tax_y
+            tax_rev += tax_y.sum()
+            sh_b = base_h.sum() / max(self.GDP_hist[-1], 1e-12)                     # as shares of GDP, so the
+            self._base_y_lr = (1 - mp.g_tax) * self._base_y_lr + mp.g_tax * sh_b if self._base_y_lr else sh_b   # average does not lag growth
         self.div_pending = np.zeros(N)
         S_D = np.zeros(N); gap_buy = np.zeros(N); cash_D = np.zeros(N); self._int_inst = 0.0
         if mp.durables:
@@ -1879,6 +1913,13 @@ class Macro:
         # owners are paid the quarter's accounting profit (book depreciation at historical cost); remaining cash
         # repays loans, since holding deposits at rb while owing at rL loses money
         profit = revenue - wb_f - int_f + m_int - self._dep * self.Kb
+        if mp.tax_split:
+            # corporate tax on positive profits (interest and depreciation deductible: no wedge on investment)
+            tax_c = mp.tau_c * np.maximum(profit, 0.0)
+            profit = profit - tax_c; self.m -= tax_c
+            tax_rev += tax_c.sum()
+            sh_c = tax_c.sum() / max(self.GDP_hist[-1], 1e-12)
+            self._rev_c_lr = (1 - mp.g_tax) * self._rev_c_lr + mp.g_tax * sh_c if self._rev_c_lr else sh_c
         self.Kb = (1 - self._dep) * self.Kb + S_I_f * fill_g
         div_f = np.clip(profit, 0.0, np.maximum(self.m, 0.0))
         self.m -= div_f

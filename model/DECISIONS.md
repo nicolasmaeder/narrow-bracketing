@@ -233,3 +233,28 @@ The bank prices each firm's loan for its expected loss: PD = pd0 (cov_ref / cove
   The household retirement-target change tested had no effect. Saving is set by targets, so the equity premium (through valuations, retirement wealth and the cost of funds) is what moves the neutral rate.
 - **New default: equity premium 4% a year over the deposit rate** (was 3%), about 3% over long Treasuries. Implied ERP estimates are 3-5%, and the old value was at the bottom of them. Real policy rate about 2% (before: about 3.3-3.8%), below nominal growth (about 4%).
 - **Fed** (quarters 300-700). The deferred asset goes 0.07 -> 0.25 of GDP (seed 1) and 0.13 -> 0.29 (seed 2) instead of exploding. Remittances average 0.2-0.3% of GDP a year. The rate is at zero 15-17% of quarters (US 1990-2024: about a quarter). Fed long holdings average 0.40-0.43 of GDP. Debt/GDP is about 1.1-1.2 with sd about 0.6 (seed 1, still too volatile).
+
+### Tax system and budget rule (Nov 23; user: do the fiscal fix first)
+
+- **Before.** One payroll tax carried all revenue (about 45% of wages). Its rate tracked the budget share needed, with a weak debt response (0.02 x the gap, in tax-rate units). Debt/GDP wandered with sd 0.3-0.6, which drove the Fed's long-bond ratchet.
+- **Taxes** (`tax_split`, default on).
+  - Payroll tax at the statutory 15.3% of wages.
+  - Corporate tax of 21% on positive profits. Interest and depreciation are deductible, so it is no wedge on investment. Firms pay it from their deposits, and valuations use after-tax earnings.
+  - Income tax at a flat rate on wages (after payroll tax), unemployment benefits, pensions and dividends, above a standard deduction of 25% of published median earnings (progressive on average).
+- **Budget rule** (sets the income-tax rate).
+  - Revenue needed = structural spending (benefits at normal unemployment, pensions, interest net of principal repayment, purchases) - the deficit that keeps debt at target as GDP grows + a primary-surplus response of 0.04 x the debt gap a year (Bohn 1998).
+  - The rate needed is computed on the cyclically adjusted income-tax base and smoothed (gain 0.05: legislated rates change slowly).
+  - The debt response is suspended while unemployment is more than 3 points above normal, and phased in below that (escape clauses: consolidation waits for the recovery).
+  - Forecasts of the base and of corporate revenue are discounted averages of their shares of GDP, so they do not lag growth.
+- **Bugs found along the way.**
+  - An unsmoothed debt response raised the income-tax rate to 70% in the start-up slump and locked the economy in it (unemployment 50-60% for 300 quarters).
+  - Averaging the base in levels lagged growth, so the rule overtaxed and held debt at about 0.6 of GDP.
+- **Results** (700 quarters, burn-in 400; seed 1 / seed 2).
+  - Debt/GDP 1.00 / 0.98 with sd 0.17 / 0.21 (before: 0.7-0.85 with sd 0.3-0.6).
+  - Income-tax rate about 17% (p10-p90 14-20%).
+  - u 5.7 / 5.6 (sd 2.2 / 2.1); inflation 1.8 / 1.9; policy rate 3.5 / 3.3 (sd about 3); growth 1.8 / 1.9; wage share 0.46-0.47.
+  - The start-up slump lasts about as long as with the old tax (it ends around quarter 240). Burn-in should be at least 400 quarters.
+- **Fed** (seed 1, quarters 300-700).
+  - The rate is at zero 18% of quarters, and the rule is below zero 39%. Long holdings average 0.34-0.39 of GDP: the ratchet persists because QE is frequent.
+  - With lower rates the Fed earns little: no remittances, and the deferred asset goes 0.06 -> 0.29 of GDP. It is bounded but not paid down.
+  - The underlying issue is policy-rate volatility (sd about 3 points; US federal funds rate 1990-2019 about 2.3).
