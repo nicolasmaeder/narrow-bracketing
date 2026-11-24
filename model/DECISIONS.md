@@ -258,3 +258,8 @@ The bank prices each firm's loan for its expected loss: PD = pd0 (cov_ref / cove
   - The rate is at zero 18% of quarters, and the rule is below zero 39%. Long holdings average 0.34-0.39 of GDP: the ratchet persists because QE is frequent.
   - With lower rates the Fed earns little: no remittances, and the deferred asset goes 0.06 -> 0.29 of GDP. It is bounded but not paid down.
   - The underlying issue is policy-rate volatility (sd about 3 points; US federal funds rate 1990-2019 about 2.3).
+- **Brackets instead of a flat rate** (user: why flat?). The flat rate was only there to give the rule one number to move. The income tax now uses the 2024 US federal schedule for a single filer: 10, 12, 22, 24, 32, 35, 37%, with thresholds on taxable income of $11,600 / 47,150 / 100,525 / 191,950 / 243,725 / 609,350 expressed as multiples of published median earnings (about $59,000). It applies above the standard deduction (25% of median earnings). The budget rule scales all marginal rates by one factor (standing in for state income taxes and legislated changes). Results (quarters 400-700; seed 1 / seed 2):
+  - Scale 1.37 / 1.11 (p10-p90 about 0.7-1.7).
+  - Average income-tax rate on taxable income 19% / 15%.
+  - u 5.6 / 6.3; inflation 2.0 / 2.1; policy rate 3.1 / 3.6; debt/GDP 0.98 with sd 0.23 / 0.26.
+  - The scale swings more than legislated rates do. A slower or bounded adjustment is an option.

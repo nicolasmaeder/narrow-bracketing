@@ -83,7 +83,12 @@ class MParams:
         self.tax_split = True
         self.tau_p = 0.153
         self.tau_c = 0.21
-        self.ded_y = 0.25           # standard deduction, share of published median earnings
+        self.ded_y = 0.25           # standard deduction, share of published median earnings (2024: $14,600 / ~$59,000)
+        # income-tax brackets: the 2024 US federal schedule (single filer), thresholds on taxable income as multiples of
+        # published median earnings ($11,600, 47,150, 100,525, 191,950, 243,725, 609,350 over about $59,000). The
+        # budget rule scales all marginal rates by one factor (state income taxes and legislated changes)
+        self.brk_y = (0.0, 0.197, 0.80, 1.70, 3.25, 4.13, 10.3)
+        self.rate_y = (0.10, 0.12, 0.22, 0.24, 0.32, 0.35, 0.37)
         self.bohn = 0.04
         self.g_tax = 0.05           # gain on the observed budget share used to set the tax rate
         # central bank
@@ -513,7 +518,9 @@ class Macro:
         self.budget_prev = None                 # last quarter's (spending net of estates, wage bill)
         self.tau = 0.25
         self.tau_s = None                       # smoothed budget share
-        self._base_y_lr = 0.0                   # discounted average of the income-tax base (the rule's forecast)
+        self._base_y_lr = 0.0                   # discounted average of schedule liability / GDP (the rule's forecast)
+        if mp.tax_split:
+            self.tau = 1.0                      # scale on the published income-tax schedule
         self._rev_c_lr = 0.0                    # discounted average of corporate tax revenue
         self.i_prev = mp.i_star
         self.pi_hist = [mp.pi_star] * 4
@@ -1217,6 +1224,16 @@ class Macro:
         self.vac_last = vac.sum()
         return L_f, emp, quits, apps, vac, L_prev
 
+    def tax_schedule(self, x, med):
+        # liability under the bracket schedule for taxable income x (thresholds scale with median earnings)
+        mp = self.mp
+        tax = np.zeros_like(x)
+        b = np.array(mp.brk_y) * med
+        for k, rk in enumerate(mp.rate_y):
+            hi = b[k + 1] if k + 1 < len(b) else np.inf
+            tax += rk * np.clip(x - b[k], 0.0, hi - b[k])
+        return tax
+
     def _tp_dev(self):
         # the term premium on long Treasuries moves required returns on other long assets (portfolio balance)
         # relative to the premium investors have come to see as normal (a discounted average of observed premia), so
@@ -1289,7 +1306,7 @@ class Macro:
             base_y = max(self._base_y_lr * GDP_a / 4 * (1 - mp.u_star) / max(1 - self.u_prev, 0.3), 1e-12)
             sh = (need - mp.tau_p * wb_prev - self._rev_c_lr * GDP_a / 4) / base_y          # structural income-tax rate
             self.tau_s = sh if self.tau_s is None else (1 - mp.g_tax) * self.tau_s + mp.g_tax * sh
-            self.tau = float(np.clip(self.tau_s, mp.tau_min, 0.7))
+            self.tau = float(np.clip(self.tau_s, mp.tau_min, 3.0))   # scale on the schedule's marginal rates
         elif self.budget_prev is not None:
             spend_net, wb_prev = self.budget_prev
             # the rule allows the deficit that keeps debt at its target share of GDP as the economy grows
@@ -1654,12 +1671,15 @@ class Macro:
         y_h = wage_h + benefit + pension + self.div_pending + extra
         if mp.tax_split:
             # income tax (flat rate above a standard deduction: progressive on average)
-            ded = mp.ded_y * (self.med_earn if self.med_earn is not None else W)
+            med_ = self.med_earn if self.med_earn is not None else W
+            ded = mp.ded_y * med_
             base_h = np.maximum(wage_h + benefit + pension + self.div_pending - ded, 0.0)
-            tax_y = tau * base_h
+            sched = self.tax_schedule(base_h, med_)            # liability under the published schedule
+            tax_y = tau * sched
             y_h = y_h - tax_y
             tax_rev += tax_y.sum()
-            sh_b = base_h.sum() / max(self.GDP_hist[-1], 1e-12)                     # as shares of GDP, so the
+            self._avg_rate_y = float(tax_y.sum() / max(base_h.sum(), 1e-12))
+            sh_b = sched.sum() / max(self.GDP_hist[-1], 1e-12)                     # as shares of GDP, so the
             self._base_y_lr = (1 - mp.g_tax) * self._base_y_lr + mp.g_tax * sh_b if self._base_y_lr else sh_b   # average does not lag growth
         self.div_pending = np.zeros(N)
         S_D = np.zeros(N); gap_buy = np.zeros(N); cash_D = np.zeros(N); self._int_inst = 0.0
@@ -2245,7 +2265,7 @@ class Macro:
         self.t += 1
         if not record:
             return None
-        return dict(t=self.t, i=i, rb=rb, ra=ra, rL=rL, tau=tau, P=P_paid, pi=pi, W=W, u=u,
+        return dict(t=self.t, i=i, rb=rb, ra=ra, rL=rL, tau=tau, avg_tax_y=getattr(self, '_avg_rate_y', 0.0), P=P_paid, pi=pi, W=W, u=u,
                     Y=sold.sum(), C=c_real.sum(), I=I_real.sum(), GDP=GDP, fill=fill, inv=self.inv.sum(),
                     K=self.K.sum(), loans=self.loan.sum(), debt=-self.g, E_B=self.E_B, B=self.b.sum(),
                     A=self.a.sum(), M_f=self.m.sum(), defaults=int((loss > 0).sum()), loss_rate=loss_rate,
