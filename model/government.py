@@ -181,7 +181,10 @@ class Government:
             # the base at normal unemployment (cyclically adjusted, so a slump does not raise the rate)
             base_y = max(self._base_y_lr * GDP_a / 4 * (1 - mp.u_star) / max(1 - self.u_prev, 0.3), 1e-12)
             sh = (need - mp.tau_p * wb_prev - self._rev_c_lr * GDP_a / 4) / base_y          # structural income-tax rate
-            self.tau_s = sh if self.tau_s is None else (1 - mp.g_tax) * self.tau_s + mp.g_tax * sh
+            # tax increases also wait for the recovery (legislatures do not raise taxes into a slump; Hoover's 1932
+            # Revenue Act is the counterexample): an increase is phased in by the same gate; cuts are not delayed
+            g_up = mp.g_tax * (gate if (self.tau_s is not None and sh > self.tau_s) else 1.0)
+            self.tau_s = sh if self.tau_s is None else (1 - g_up) * self.tau_s + g_up * sh
             self.tau = float(np.clip(self.tau_s, mp.tau_min, 3.0))   # scale on the schedule's marginal rates
         elif self.budget_prev is not None:
             spend_net, wb_prev = self.budget_prev

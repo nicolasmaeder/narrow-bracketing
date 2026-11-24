@@ -190,6 +190,8 @@ class MParams:
         self.w_now = 0.34           # weight of today's short rate in the expected average over the bond's duration
         self.kappa_tp = 0.25        # term-premium cut per unit of the short-rate rule below zero
         self.g_tp = 0.1             # speed at which the target returns to normal
+        self.distress_cut = 0.1     # largest pay cut at a review by a firm with distress_q quarters of trailing losses
+        self.distress_q = 2
         self.tp_cut_max = 0.004     # largest cut, per quarter (QE1-QE3 lowered the 10-year premium by about 1.5 points)
         # Fed losses: False = carried as a deferred asset (the Fed since 2011): a loss is paid in new reserves, and
         # remittances resume only once later income has paid it down; True = the Treasury covers them (the Bank of
@@ -628,7 +630,13 @@ class Macro(Technology, Firms, Banks, Labor, Government):
                         We = np.where(self.piece, self.Wbar_obs(self.piece), We_pool_) * (1 + g_mkt)
                 w_des = self.pay_review(We * (1 + g_mkt) ** 1.5, qf, Q, r_own, We_piece, self.gL_plan)
                 self._cut_wanted = w_des < self.w                      # the firm would cut pay if workers accepted it
-                w_post = np.maximum(self.w, w_des)                     # no nominal cuts
+                w_post = np.maximum(self.w, w_des)                     # no nominal cuts (morale, Bewley 1999) ...
+                if mp.distress_cut > 0:
+                    # ... except at firms losing money: Bewley's employers cut pay when the firm's survival is at stake,
+                    # and base-pay cuts in the US concentrate in distressed firms (Grigsby, Hurst and Yildirmaz 2021:
+                    # about 2.5% of stayers a year, 6% in 2009, typically about 10%)
+                    dist_ = self.dq >= mp.distress_q
+                    w_post = np.where(dist_ & (w_des < self.w), np.maximum(w_des, self.w * (1 - mp.distress_cut)), w_post)
                 if mp.weiss and mp.commission > 0:
                     # output-paying firms: commission on last quarter's revenue per unit of effective labor; it moves
                     # with sales, down as well as up (flexible pay)

@@ -1,4 +1,4 @@
-"""Regression suite. Runs a fixed economy (seed 1) for 300 quarters, then three scenarios from that state (asset bust plus
+"""Regression suite. Runs a fixed economy (seed 1, warm start) for 100 quarters, then three scenarios from that state (asset bust plus
 credit cut, deficit surge, policy-rate shock), and records the key series every quarter.
 
   python3 regress.py save      store the current results as the baseline (regress_baseline.json)
@@ -13,7 +13,7 @@ from run_macro import build
 KEYS = ['u', 'pi', 'i', 'Y', 'C', 'I', 'P', 'W', 'GDP', 'loans', 'debt', 'E_B', 'B', 'A', 'V', 'tau', 'wage_share',
         'markup', 'defaults', 'reserves']
 EXTRA = lambda m: dict(TP=m.TP, yL=m.y_L, X_F=m.X_F, R=m.R_res, E_F=m.E_F, def_F=m.def_F, n_firms=float(len(m.p)))
-T0, H = 300, 16
+T0, H = 100, 16
 FN = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'regress_baseline.json')
 
 def rec(m, r):

@@ -2,10 +2,16 @@ import numpy as np, time, json, sys
 from household import Params
 from macro import Macro, MParams
 HP = dict(version="calculator", psi_A=0.9, fixed_cost=0.15, entry_cost=0.05, eps_B=0.5, G25=2.0, band=0.05, sigma_B=1.0, psi_B=1.0, R_plan=1.01, need=0.33, cred_lim=1.5)
-def build(need=None, hpk=None, **mk):
+def build(need=None, hpk=None, warm=True, **mk):
+    """Build the economy. warm=True starts from the stored state of a long default run (warm.py) instead of the
+    model's own initial state, which takes about 250 quarters to leave its start-up slump."""
     hp = dict(HP) if need is None else {**HP, 'need': need}
     hp.update(hpk or {})
-    return Macro(Params(**hp), MParams(**mk))
+    m = Macro(Params(**hp), MParams(**mk))
+    if warm:
+        import warm as _w
+        _w.transplant(m)
+    return m
 if __name__ == "__main__":
     m = build()
     m.Lf = m.z[m.age < m.hp.J_W].sum()

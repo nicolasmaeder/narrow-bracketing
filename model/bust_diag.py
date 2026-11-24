@@ -14,7 +14,7 @@ def run(seed):
         m=pickle.load(open(fn,'rb'))
     else:
         m=build(seed=seed, **KW)
-        for t in range(400): m.step()
+        for t in range(100): m.step()   # warm start (warm.py): 100 quarters settle the run
         m._mrp=None; os.makedirs(os.path.dirname(fn),exist_ok=True); pickle.dump(m,open(fn,'wb'))
     m._mrp=None; a,b=copy.deepcopy(m),copy.deepcopy(m)
     if SHOCK=='rate': pass
