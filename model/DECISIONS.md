@@ -279,3 +279,17 @@ The bank prices each firm's loan for its expected loss: PD = pd0 (cov_ref / cove
   2. *No tax increases into a slump.* Increases in the structural income-tax scale are phased in by the same gate as the debt response; cuts are not delayed. (Hoover's 1932 Revenue Act is the historical counterexample.)
   3. *Pay cuts at distressed firms* (`distress_cut` 10%, after `distress_q` = 2 quarters of trailing losses). Bewley's employers cut pay when the firm's survival is at stake, and US base-pay cuts concentrate in distressed firms (Grigsby, Hurst and Yildirmaz 2021: about 2.5% of stayers a year, 6% in 2009). It hardly mattered in the start-up slump, because the firms there were profitable.
 - **Open.** The initial state itself should be rebuilt for the current model (a stationary point of the full economy), so cold starts stop depending on the stored file. Quarterly inflation and the policy rate are very volatile in the warm runs (annualized quarterly inflation from -8 to +17; policy rate 0-13%).
+
+### Tests rerun with taxes, equity premium and warm start (Nov 23; `fed_test.py`, 2 seeds; `bust_diag.py`, 4 seeds)
+
+- **Deficit surge** (15% of quarterly GDP for 4 quarters, at full employment). Inflation and a rate hike of about 5 points; inflation erodes debt/GDP at first, then it is up 15 points. The term premium rises 0.3 points under the Fed's rule against 0.6 with a passive Fed. The Fed eventually holds 10% of GDP more.
+- **2008** (asset values -30%, credit lines halved).
+  - Unemployment peaks +7.4 points under the rule against +9.6 with a passive Fed, and recovers within about 5 years (passive: 6).
+  - The Fed buys about 29% of GDP of long bonds (US QE1-QE3, Treasuries plus MBS: about 25%), and reserves rise 26% of GDP.
+  - The term premium falls 0.6 points (passive: rises 0.5); the long yield falls 1.4 points.
+  - The price level is 8-10% below the no-shock path (passive: 10-15%; data: about 4%), still too much deflation.
+  - `bust_diag` (4 seeds): peak +7.4 points at quarter 4, back to normal by about quarter 16-20 (data: about 6 years).
+- **2020** (new; `SHOCK=2020`).
+  - Lockdown: a new experiment variable `lock` closes a share of service capacity, so closed capacity sells nothing and employs no one (temporary layoffs). Unmet service spending stays in households' accounts (forced saving). 30% of service capacity is closed for two quarters and 15% in the third, with transfers of 8% of quarterly GDP for three quarters (checks and enhanced UI, about 6% of annual GDP).
+  - Results: output -9% in quarter 2 (2020Q2: about -10%). Unemployment +3.9 points (2020: about +10, mostly temporary layoffs; the closure is probably too small). Then overheating: unemployment 2.6 below normal, the price level +7% and a rate hike of 3.4 points (2021-23: inflation and hikes of 5 points), followed by a downturn about three years later.
+  - Fed purchases are modest (+6% of GDP; 2020: about 15%), because the transfers were spent and the supply did not push the premium far.

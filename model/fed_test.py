@@ -1,6 +1,7 @@
 """Long bonds and the Fed's balance sheet. Burned-in economies (cached like bust_diag), then a shock, with the Fed's
 term-premium rule on and with a passive Fed (holdings fixed, the market sets the premium).
 SHOCK=deficit: transfers of SIZE x quarterly GDP for four quarters (2020: about 0.15 -> 15% of annual GDP).
+SHOCK=2020: lockdown of service capacity plus transfers.
 SHOCK=2008: asset bust plus credit-line cut (as in bust_diag); the short-rate rule falls below zero -> QE.
 Prints differences from the no-shock path (averages over seeds), every 2 quarters."""
 import sys, os, copy, json, pickle, hashlib, numpy as np, warnings
@@ -28,6 +29,11 @@ def path(m, shock, rule):
     for k in range(H):
         G = sum(m.GDP_hist[-4:]); Gq = m.GDP_hist[-1]
         ex = np.full(m.hp.N, SIZE * Gq / m.hp.N) if (shock and SHOCK == 'deficit' and k < 4) else None
+        if shock and SHOCK == '2020':
+            # lockdown: 30% of service capacity closed for two quarters, 15% in the third; transfers (checks and
+            # enhanced UI, about 6% of annual GDP) of 8% of quarterly GDP for three quarters
+            m.lock = [0.3, 0.3, 0.15][k] if k < 3 else 0.0
+            ex = np.full(m.hp.N, 0.08 * Gq / m.hp.N) if k < 3 else None
         r = m.step(extra_y=ex)
         G = sum(m.GDP_hist[-4:])
         out.append(dict(u=100 * r['u'], i=400 * r['i'], yL=400 * m.y_L, TP=400 * m.TP, debt=100 * r['debt'] / G,

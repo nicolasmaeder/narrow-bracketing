@@ -393,6 +393,7 @@ class Macro(Technology, Firms, Banks, Labor, Government):
         self._recap = 0.0
         self.Bills = self.SOMA = self.R_res = self.DW = self.TGA = 0.0   # Treasury bills, Fed holdings, reserves, discount loans, TGA
         self.F_B = 0.0                                # bills held by the retirement fund
+        self.lock = 0.0                               # experiments: share of service capacity closed (2020 lockdown)
         self.X_L = self.X_F = self.X_fund = 0.0       # long bonds outstanding / held by the Fed / the fund (coupon units)
         self.X_bk = np.zeros(mp.NB)                   # held by each bank
         self.q_L = 1.0 / (1 + mp.i_star + mp.tp0 - mp.delta_c)   # long bond price
@@ -810,6 +811,11 @@ class Macro(Technology, Firms, Banks, Labor, Government):
         Lforce = np.where(part, self.z, 0.0)
         if mp.wage_posting:
             if mp.vacancies:
+                if self.lock > 0:                             # lockdown: closed service capacity employs no one
+                    keep_ = np.where(self.sec == 1, 1 - self.lock, 1.0)
+                    L_keep, L_tgt = L_keep * keep_, L_tgt * keep_
+                    if mp.hiring == "convex":
+                        H_want = H_want * keep_
                 Ld, emp, quits, apps, V, L_prev = self.labor_market(w_post, We, L_keep, part, L_target=L_tgt, q_fill=qf,
                                                                     hires=H_want if mp.hiring == "convex" else None)
                 if mp.weiss:                                      # each firm observes its workers' average output
@@ -1032,6 +1038,8 @@ class Macro(Technology, Firms, Banks, Labor, Government):
         Ssec_f = S_sec[sec]
         secsum = lambda x: np.bincount(sec, x, minlength=nsec)[sec]  # sum over the firm's sector
         avail = (self.inv + np.where(self.to_order, y, 0.0)) if mp.prod_lag else self.inv + y
+        if self.lock > 0:                                     # experiments: a lockdown closes a share of service capacity
+            avail = np.where(sec == 1, avail * (1 - self.lock), avail)
         # buyers choose among firms by random utility (logit): shares proportional to (p/P)^(-eps) x taste
         wts = (self.p / P) ** (-mp.eps) * np.exp(self.q_app + mp.taste_sd * self.rng.standard_normal(F))
         if mp.rho_c < 1:
