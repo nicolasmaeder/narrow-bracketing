@@ -314,3 +314,19 @@ The bank prices each firm's loan for its expected loss: PD = pd0 (cov_ref / cove
   2. With many firms the economy is too calm: unemployment sd 0.4-0.5 against about 1.6 in the US. It lacks the aggregate disturbances that drive real cycles: shifts in credit supply, asset prices, fiscal and monetary policy, energy prices, sectoral and technology shocks. A realistic firm-size distribution (Zipf; granular shocks from the largest firms, Gabaix 2011) would restore part of the volatility honestly.
   3. Inflation still has white noise (autocorrelation about 0) at 200 firms; the US CPI aggregates thousands of items.
   4. The default is still 20 firms; switching changes the calibration everywhere.
+
+### 200 firms by default (Nov 23; user: good)
+
+- **Default `F = 200`.** With equal-ish firms that gives a sales Herfindahl of about 0.007 (US: about 0.003 by Gabaix's 2011 h of 5.3%). The warm state was re-stored from runs that split the 20-firm state.
+- **Two long-run breakdowns with small firms, both fixed.** Firms average about 19 workers, so a firm can end up with none.
+  1. *A firm that cannot deliver kept winning customers.* A service firm whose pay had fallen behind could not hire, so it had zero output. It still priced on its posted (low) wage, so it was cheap, and the logit sent it 58% of its sector's re-shopping customers. Their unserved orders then made it plan huge capacity: capital 50 times the median, financed by loans. Fix: buyers who re-shop weigh each seller's delivery record (a discounted average of the share of its orders it served, gain 0.25). Stockouts drive customers away for good (Anderson, Fitzsimons and Simester 2006).
+  2. *An investment spiral.* Normal sales (the basis for capacity) counted all orders, including ones the firm had no way to serve. A few firms' capital ran away (max/median 30 -> 380). Their investment spending fed unmet demand, then hyperinflation, then breakdown after about 650 quarters. Fix: orders count toward normal sales only up to 1.5 times what the firm could supply. Separately, entrants used to inherit the exiting firm's pay and beliefs, so a zombie's slot churned through zombie entrants. The entrant now takes over the plant (capital, stock, books), posts the median pay of incumbents like it (same sector and pay scheme), takes their median beliefs about hiring and demand noise, gets a clean delivery record, and gets normal sales in proportion to its customers.
+- **Results** (800 quarters after the warm start, quarters 100-800; seed 1 / seed 2):
+  - u 3.6 (sd 0.4 / 0.5); inflation 2.0; policy rate 3.9 / 4.0 (sd 2.0 / 1.9); growth 2.4.
+  - Markup 1.65; wage share 0.45; debt/GDP 0.80 / 0.76 (sd 0.11 / 0.16).
+  - Term premium 0.81 / 0.72; Fed long holdings 0.12 / 0.11 of GDP. No breakdown.
+- **Open.**
+  - The cycle is too calm (u sd 0.4-0.5; US about 1.6). Next: realistic economy-wide disturbances.
+  - Exits are now rare (0-1 a quarter; US: about 2% of firms a quarter).
+  - Normal unemployment is 3.6%, below u* = 5%.
+  - The 2008/2020/deficit tests should be rerun at 200 firms.

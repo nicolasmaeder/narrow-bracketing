@@ -35,7 +35,8 @@ from government import Government
 class MParams:
     def __init__(self, **kw):
         # firms
-        self.F = 20
+        self.F = 200                # firms (sellers). With 20, firm-level price and demand noise did not average out
+                                    # (DECISIONS.md: volatility); 200 gives about the US granularity of sales (Gabaix 2011)
         self.alpha = 0.3
         self.delta = 0.02           # depreciation per quarter
         self.Z = 1.0
@@ -265,6 +266,9 @@ class MParams:
                                     # AR(1) with persistence rho_a; size dispersion is mostly demand (Foster, Haltiwanger
                                     # and Syverson 2008)
         self.entry_cust = 0.5
+        self.bo_cap = 1.5           # orders count toward normal sales up to this multiple of what the firm could supply
+        self.avail_rep = True       # buyers who re-shop weigh sellers' delivery records
+        self.g_serv = 0.25          # gain on the share of orders served in that record
         self.sd_a = 0.15
         self.services = True
         self.s_sv = 0.25
@@ -393,6 +397,7 @@ class Macro(Technology, Firms, Banks, Labor, Government):
         self._recap = 0.0
         self.Bills = self.SOMA = self.R_res = self.DW = self.TGA = 0.0   # Treasury bills, Fed holdings, reserves, discount loans, TGA
         self.F_B = 0.0                                # bills held by the retirement fund
+        self.serv_rec = np.ones(F)                    # each seller's record of serving its orders (buyers' belief)
         self.lock = 0.0                               # experiments: share of service capacity closed (2020 lockdown)
         self.X_L = self.X_F = self.X_fund = 0.0       # long bonds outstanding / held by the Fed / the fund (coupon units)
         self.X_bk = np.zeros(mp.NB)                   # held by each bank
@@ -1042,6 +1047,11 @@ class Macro(Technology, Firms, Banks, Labor, Government):
             avail = np.where(sec == 1, avail * (1 - self.lock), avail)
         # buyers choose among firms by random utility (logit): shares proportional to (p/P)^(-eps) x taste
         wts = (self.p / P) ** (-mp.eps) * np.exp(self.q_app + mp.taste_sd * self.rng.standard_normal(F))
+        if mp.avail_rep:
+            # buyers who shop around also weigh whether a seller delivers: its record of serving its orders (a
+            # discounted average of the share served). A seller that cannot deliver does not keep winning customers
+            # with a low price (stockouts drive customers away for good, Anderson, Fitzsimons and Simester 2006)
+            wts = wts * self.serv_rec
         if mp.rho_c < 1:
             # customer market: a share rho_c of buyers shop around (logit); the rest stay with their seller
             cust_old = self.cust.copy()
@@ -1118,6 +1128,8 @@ class Macro(Technology, Firms, Banks, Labor, Government):
         if getattr(self, "trace_on", False) and mp.vacancies:
             self.trace[-1].update(sold=float(sold[0]), dem=float(q_dem[0]), avail=float(avail[0]))
         self._qd, self._sold, self._avail = q_dem.copy(), sold.copy(), avail.copy()
+        served = np.where(q_dem > 1e-12, sold / np.maximum(q_dem, 1e-12), 1.0)
+        self.serv_rec = (1 - mp.g_serv) * self.serv_rec + mp.g_serv * served
         # value of output per unit of effective labor (this quarter's production at the posted price), smoothed
         ok_ = Ld > 1e-6 * max(Ld.max(), 1e-9)
         vpe = np.where(ok_, self.p * self.prod(Ld) / np.maximum(Ld, 1e-9), self._rev_pe)
@@ -1192,6 +1204,22 @@ class Macro(Technology, Firms, Banks, Labor, Government):
                 self.cust = self.cust + np.where(ex, 0.0, tot * keep / np.maximum(np.bincount(self.sec, keep, minlength=2)[self.sec], 1e-12))
                 self.cov = np.where(ex, mp.cov_ref, self.cov)
                 self.dq = np.where(ex, 0, self.dq)
+                # the entrant takes over the plant (capital, stock, books) but not the exiting firm's pay or beliefs:
+                # it posts the pay of incumbents like it (same sector and pay scheme), starts from their beliefs
+                # about hiring and demand noise, a clean delivery record, and normal sales for its customers
+                inc = ~ex
+                for sc in (0, 1):
+                    for pc in (False, True):
+                        g_ = (self.sec == sc) & (self.piece == pc)
+                        e_, i_ = g_ & ex, g_ & inc
+                        if e_.any() and i_.any():
+                            for nm in ('w', 'lnq', 'lnapp', 'lnQ', 'hfill', 'lnphi', 'sig2'):
+                                arr = getattr(self, nm)
+                                arr[e_] = np.median(arr[i_])
+                    e_, i_ = ex & (self.sec == sc), inc & (self.sec == sc)
+                    if e_.any() and i_.any():
+                        self.s_lr[e_] = self.cust[e_] * np.median(self.s_lr[i_] / np.maximum(self.cust[i_], 1e-12))
+                self.serv_rec[ex] = 1.0
                 if mp.sd_q > 0:
                     self.q_app = np.where(ex, mp.sd_q * self.rng.standard_normal(F), self.q_app)
         # owners are paid the quarter's accounting profit (book depreciation at historical cost); remaining cash
@@ -1362,7 +1390,9 @@ class Macro(Technology, Firms, Banks, Labor, Government):
             self.gY = (1 - mp.g_Y) * self.gY + mp.g_Y * np.log(Y_real / self.Y_prev)
             self.gProd = (1 - mp.g_Y) * self.gProd + mp.g_Y * np.log(Y_real / L_emp / (self.Y_prev / self.L_prev_emp))
         self.Y_prev, self.L_prev_emp = Y_real, L_emp
-        self.s_lr = (1 - mp.g_s) * self.s_lr * np.exp(self.gY) + mp.g_s * np.maximum(q_dem, 1e-9)   # orders, incl. backorders
+        # normal sales: orders, including backorders, but only up to a margin over what the firm could supply (orders
+        # it had no way of serving, e.g. with no staff, do not justify capacity)
+        self.s_lr = (1 - mp.g_s) * self.s_lr * np.exp(self.gY) + mp.g_s * np.maximum(np.minimum(q_dem, mp.bo_cap * np.maximum(avail, sold)), 1e-9)
         self.gS = (1 - mp.g_Y) * self.gS + mp.g_Y * np.log(S_tot / self.S_last)
         self.S_last = S_tot
         pi = P_paid / self.P_prev - 1

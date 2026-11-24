@@ -3,7 +3,8 @@ households at the stationary distribution of the household block alone) is far f
 the first quarters bring a price burst, a policy rate near 60% a year, and a slump that lasts about 60 years
 (DECISIONS.md, start-up slump). A warm start begins instead from a stored state of a long run of the default model.
 
-  python3 warm.py save [T]    run the default model (seed 1) for T quarters (default 500) and store its state
+  python3 warm.py save [T]    continue the stored run (default model, seed 1) for T quarters (default 500) and
+                              store its state (from the model's own initial state if none is stored)
                               in warm_state.pkl.gz
 
 build(..., warm=True) creates the model as usual (current code, parameters and options), then copies into it every
@@ -16,9 +17,12 @@ SKIP = {'hp', 'mp', 'rng', '_mrp'}
 
 def save(T=500):
     from run_macro import build
-    m = build(seed=1, warm=False)
+    m = build(seed=1, warm=os.path.exists(FN))   # continue from the stored state (a cold start takes ~250 quarters
+                                                 # to leave its start-up slump, and with many firms may not survive it)
     for _ in range(T):
-        m.step()
+        r = m.step()
+        if not np.isfinite(r['u']):
+            raise RuntimeError('run broke down; state not saved')
     state = {k: v for k, v in m.__dict__.items() if k not in SKIP}
     with gzip.open(FN, 'wb') as f:
         pickle.dump(state, f)
