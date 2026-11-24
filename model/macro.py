@@ -2100,7 +2100,11 @@ class Macro:
             # Fed's term-premium target: holds it at normal against supply; cuts it when the short-rate rule asks
             # for a rate below zero (QE); otherwise lets it return to normal gradually (QT)
             tp_back = self.TP_star + mp.g_tp * (mp.tp0 - self.TP_star)
-            self.TP_star = min(max(mp.tp0 + mp.kappa_tp * min(self._rule, 0.0), mp.tp0 - mp.tp_cut_max), tp_back)
+            # QE only once the policy rate is at its lower bound (the rule's smoothing keeps the rate positive for a
+            # while after the rule itself turns negative; the Fed bought long bonds only at the lower bound)
+            at_lb = i <= (0.0 if mp.zlb else -1.0) + 1e-9
+            cut_ = mp.kappa_tp * min(self._rule, 0.0) if at_lb else 0.0
+            self.TP_star = min(max(mp.tp0 + cut_, mp.tp0 - mp.tp_cut_max), tp_back)
             # long yield: expected average short rate over the bond's duration (today's bill rate and the Fed's
             # published neutral-rate estimate) plus the term premium
             yhat = max(mp.w_now * ib + (1 - mp.w_now) * self.i_star_est, 0.0)
